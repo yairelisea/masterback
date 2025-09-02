@@ -7,6 +7,7 @@ import feedparser
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+
 from ..db import get_session
 from .. import models
 
@@ -27,17 +28,22 @@ class NewsResponse(BaseModel):
 
 # ---------- Helpers ----------
 def build_google_news_rss(query: str, lang: str = "es-419", country: str = "MX") -> str:
-    # comillas para búsquedas exactas ayudan con actores políticos
+    """
+    Arma el URL de Google News RSS. Usamos comillas para forzar coincidencia exacta.
+    """
     q = f"\"{query}\""
     params = {
         "q": q,
-        "hl": lang,   # idioma UI
-        "gl": country, # país
+        "hl": lang,              # idioma de la interfaz
+        "gl": country,           # país
         "ceid": f"{country}:{lang}"
     }
     return "https://news.google.com/rss/search?" + urllib.parse.urlencode(params)
 
 def _to_dt(struct_time) -> Optional[datetime.datetime]:
+    """
+    Convierte struct_time del feed a datetime con tz UTC.
+    """
     try:
         if struct_time:
             return datetime.datetime.fromtimestamp(time.mktime(struct_time), tz=datetime.timezone.utc)
@@ -45,77 +51,100 @@ def _to_dt(struct_time) -> Optional[datetime.datetime]:
         return None
     return None
 
-# ---------- Endpoints ----------
+def clean_link(url: str) -> str:
+    """
+    Si el enlace es un redirect de Google News, extrae el destino real (?url=...).
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.netloc.endswith("news.google.com"):
+            qs = urllib.parse.parse_qs(parsed.query)
+            if "url" in qs and qs["url"]:
+                return qs["url"][0]
+    except Exception:
+        pass
+    return url
+
+# ---------- Endpoint ----------
 @router.get("", response_model=NewsResponse)
 async def search_news(
     q: str = Query(..., min_length=2, description="Nombre del actor político o frase exacta"),
     lang: str = Query("es-419"),
     country: str = Query("MX"),
-    limit: int = Query(15, ge=1, le=50, description="Máximo de items a devolver"),
+    size: int = Query(35, ge=1, le=100, description="Número de items a devolver"),
+    days_back: int = Query(14, ge=1, le=90, description="Rango de días hacia atrás (por fecha de publicación)"),
     campaignId: Optional[str] = Query(None, description="Si lo envías, guarda cada resultado como IngestedItem"),
     session: AsyncSession = Depends(get_session)
 ):
     """
-    Busca en Google News (RSS) y devuelve lista de notas.
-    Si `campaignId` viene, intenta guardar cada item en la base (evitando duplicados por hash del link).
+    Busca en Google News (RSS), filtra por ventana temporal (days_back) y limita a 'size'.
+    - Normaliza enlaces de Google News a su URL real.
+    - Si 'campaignId' viene, guarda los items como IngestedItem (evitando duplicados por hash del link).
     """
     rss_url = build_google_news_rss(q, lang=lang, country=country)
 
-    # Descarga el RSS con timeout
+    # 1) Descargar el RSS
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(rss_url)
         if resp.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Error al consultar Google News RSS ({resp.status_code})")
+            raise HTTPException(status_code=502, detail=f"Error Google News RSS ({resp.status_code})")
 
+    # 2) Parsear feed
     feed = feedparser.parse(resp.content)
     if feed.bozo:
-        # feed.bozo señala parse errors
         raise HTTPException(status_code=502, detail="No se pudo parsear el feed RSS de Google News")
 
-    items: List[NewsItem] = []
-    for entry in feed.entries[:limit]:
+    # 3) Filtrar por fecha
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days_back)
+
+    collected: List[NewsItem] = []
+    for entry in feed.entries:
         title = getattr(entry, "title", "").strip()
-        link = getattr(entry, "link", "").strip()
+        link = clean_link(getattr(entry, "link", "").strip())
         summary = getattr(entry, "summary", None)
-        # El "source" suele venir en entry.source.title si está presente
+
+        # Fuente (si viene)
         source = None
         try:
-            source = entry.source.title  # type: ignore
+            source = entry.source.title  # type: ignore[attr-defined]
         except Exception:
             pass
+
         published_at = _to_dt(getattr(entry, "published_parsed", None))
 
-        items.append(NewsItem(
-            title=title,
-            link=link,
-            source=source,
-            published_at=published_at,
-            summary=summary
-        ))
+        # Filtrar por ventanas de tiempo
+        if published_at and published_at < cutoff:
+            continue
 
-    # Guardar (opcional) en BD como IngestedItem
+        if title and link:
+            collected.append(NewsItem(
+                title=title,
+                link=link,
+                source=source,
+                published_at=published_at,
+                summary=summary
+            ))
+
+    # 4) Limitar a 'size'
+    items = collected[:size]
+
+    # 5) Guardar en BD (opcional)
     if campaignId and items:
         # Validar que exista la campaña
         cres = await session.execute(select(models.Campaign).where(models.Campaign.id == campaignId))
-        campaign = cres.scalar_one_or_none()
-        if not campaign:
+        if not cres.scalar_one_or_none():
             raise HTTPException(status_code=404, detail="campaignId no existe")
 
         import hashlib, uuid
         saved = 0
         for it in items:
-            if not it.link:
-                continue
+            # Dedupe por hash de link
             h = hashlib.sha256(it.link.encode()).hexdigest()
-
-            # evitar duplicados por hash
-            dup = await session.execute(
-                select(models.IngestedItem).where(models.IngestedItem.hash == h)
-            )
+            dup = await session.execute(select(models.IngestedItem).where(models.IngestedItem.hash == h))
             if dup.scalar_one_or_none():
                 continue
 
-            row = models.IngestedItem(
+            session.add(models.IngestedItem(
                 id=str(uuid.uuid4()),
                 campaignId=campaignId,
                 sourceType=models.SourceType.NEWS,
@@ -127,8 +156,7 @@ async def search_news(
                 publishedAt=it.published_at,
                 status=models.ItemStatus.QUEUED,
                 hash=h
-            )
-            session.add(row)
+            ))
             saved += 1
 
         if saved:
