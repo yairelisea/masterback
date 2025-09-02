@@ -9,7 +9,9 @@ from dotenv import load_dotenv
 from .routers import campaigns, sources, ingest, analyses, news
 
 from .db import engine, Base, ping_db
-from .routers import campaigns, sources, ingest, analyses
+from .routers import campaigns, sources, ingest, analyses, news, ai_analysis  # + ai_analysis
+...
+app.include_router(ai_analysis.router)
 
 load_dotenv()  # carga .env si existe
 
