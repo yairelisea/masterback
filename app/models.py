@@ -1,0 +1,110 @@
+from sqlalchemy import String, Text, Enum, DateTime, Boolean, Float, ForeignKey, UniqueConstraint, Index
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.dialects.postgresql import JSONB
+from datetime import datetime
+import enum
+
+from .db import Base
+
+class SourceType(str, enum.Enum):
+    NEWS = "NEWS"
+    FACEBOOK = "FACEBOOK"
+    INSTAGRAM = "INSTAGRAM"
+    X = "X"
+    YOUTUBE = "YOUTUBE"
+    TIKTOK = "TIKTOK"
+
+class ItemStatus(str, enum.Enum):
+    QUEUED = "QUEUED"
+    FETCHED = "FETCHED"
+    ANALYZED = "ANALYZED"
+    ERROR = "ERROR"
+
+class User(Base):
+    __tablename__ = "User"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    email: Mapped[str] = mapped_column(String, unique=True, index=True)
+    name: Mapped[str | None] = mapped_column(String, nullable=True)
+    role: Mapped[str] = mapped_column(String, default="admin")
+    createdAt: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updatedAt: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    campaigns: Mapped[list["Campaign"]] = relationship(back_populates="owner")
+
+class Campaign(Base):
+    __tablename__ = "Campaign"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    name: Mapped[str] = mapped_column(String)
+    slug: Mapped[str] = mapped_column(String, unique=True, index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ownerId: Mapped[str] = mapped_column(String, ForeignKey("User.id"))
+    owner: Mapped[User] = relationship(back_populates="campaigns")
+    createdAt: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updatedAt: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    sources: Mapped[list["SourceLink"]] = relationship(back_populates="campaign", cascade="all, delete-orphan")
+    items: Mapped[list["IngestedItem"]] = relationship(back_populates="campaign", cascade="all, delete-orphan")
+    analyses: Mapped[list["Analysis"]] = relationship(back_populates="campaign", cascade="all, delete-orphan")
+
+class SourceLink(Base):
+    __tablename__ = "SourceLink"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    campaignId: Mapped[str] = mapped_column(String, ForeignKey("Campaign.id"))
+    campaign: Mapped[Campaign] = relationship(back_populates="sources")
+    type: Mapped[SourceType] = mapped_column(Enum(SourceType))
+    label: Mapped[str | None] = mapped_column(String, nullable=True)
+    url: Mapped[str] = mapped_column(String)
+    isActive: Mapped[bool] = mapped_column(Boolean, default=True)
+    createdAt: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updatedAt: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_source_campaign_type", "campaignId", "type"),
+        UniqueConstraint("campaignId", "url", name="uq_source_campaign_url"),
+    )
+
+class IngestedItem(Base):
+    __tablename__ = "IngestedItem"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    campaignId: Mapped[str] = mapped_column(String, ForeignKey("Campaign.id"))
+    campaign: Mapped[Campaign] = relationship(back_populates="items")
+    sourceType: Mapped[SourceType] = mapped_column(Enum(SourceType))
+    sourceUrl: Mapped[str] = mapped_column(String)
+    author: Mapped[str | None] = mapped_column(String, nullable=True)
+    title: Mapped[str | None] = mapped_column(String, nullable=True)
+    excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    contentUrl: Mapped[str] = mapped_column(String)
+    publishedAt: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    fetchedAt: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    status: Mapped[ItemStatus] = mapped_column(Enum(ItemStatus), default=ItemStatus.QUEUED)
+    hash: Mapped[str] = mapped_column(String, unique=True)
+
+    analyses: Mapped[list["Analysis"]] = relationship(back_populates="item", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("idx_item_campaign_source_status", "campaignId", "sourceType", "status"),
+        Index("idx_item_publishedAt", "publishedAt"),
+    )
+
+class Analysis(Base):
+    __tablename__ = "Analysis"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    campaignId: Mapped[str] = mapped_column(String, ForeignKey("Campaign.id"))
+    campaign: Mapped[Campaign] = relationship(back_populates="analyses")
+
+    itemId: Mapped[str | None] = mapped_column(String, ForeignKey("IngestedItem.id"), nullable=True)
+    item: Mapped["IngestedItem | None"] = relationship(back_populates="analyses")
+
+    model: Mapped[str] = mapped_column(String)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sentiment: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stance: Mapped[str | None] = mapped_column(String, nullable=True)
+    topics: Mapped[dict | list | None] = mapped_column(JSONB, nullable=True)
+    entities: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    createdAt: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_analysis_campaign_createdAt", "campaignId", "createdAt"),
+        Index("idx_analysis_item", "itemId"),
+    )
