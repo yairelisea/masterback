@@ -4,3 +4,4 @@ SQLAlchemy==2.0.32
 psycopg[binary]==3.2.9
 pydantic[email]==2.8.2
 python-dotenv==1.0.1
+greenlet==3.0.3
