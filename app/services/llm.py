@@ -1,5 +1,5 @@
 # app/services/llm.py
-import os
+import os, json
 from typing import Any, Dict, List
 from openai import OpenAI
 
@@ -44,12 +44,12 @@ NEWS_ANALYSIS_SCHEMA: Dict[str, Any] = {
                 "properties": {
                     "view": {
                         "type": "string",
-                        "description": "Cómo queda percibido el político en esta nota (máx. 3–5 frases).",
+                        "description": "Cómo queda percibido el político en esta nota (3–5 frases).",
                         "maxLength": 600
                     },
                     "evidence": {
                         "type": "array",
-                        "description": "Puntos concretos de la nota que sustentan la percepción.",
+                        "description": "Puntos concretos que sustentan la percepción.",
                         "items": {"type": "string"},
                         "maxItems": 5
                     },
@@ -105,34 +105,74 @@ SYSTEM_PROMPT_ITEM = (
     "Analiza el título y el resumen de una nota y produce: "
     "sentimiento [-1..1], tono, 3-8 temas, resumen (2-3 frases), "
     "entidades (personas/organizaciones/lugares), postura hacia el actor, "
-    "y una PERCEPCIÓN (párrafo breve) con evidencia y confianza. "
-    "Sé fiel al texto disponible y evita inventar información."
+    "y una PERCEPCIÓN (párrafo breve) con 2-5 evidencias y confianza. "
+    "Sé fiel al texto y evita inventar información."
 )
 
 SYSTEM_PROMPT_AGG = (
     "Eres un consultor político. Con base en una lista de resultados ya analizados "
-    "(título, fuente, fecha, y un JSON con sentimiento, temas, postura y percepción), "
+    "(título, fuente, fecha y JSON con sentimiento, temas, postura y percepción), "
     "crea una síntesis ejecutiva: promedio de sentimiento, distribución de posturas, "
     "temas predominantes, 3-6 conclusiones y una perspectiva general de cómo se percibe "
     "al actor político en el periodo."
 )
 
+def _parse_json_strict(text: str) -> Dict[str, Any]:
+    """
+    Intenta parsear JSON puro. Si viene texto extra, busca el primer y último '{'...'}'.
+    """
+    try:
+        return json.loads(text)
+    except Exception:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            return json.loads(text[start:end+1])
+        raise
+
+def _chat_structured(messages: List[Dict[str, str]], schema: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Intenta usar json_schema; si el cliente no lo soporta, cae a json_object con instrucciones.
+    """
+    client = get_openai()
+    # 1) Intento: json_schema (estricto)
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-5-mini",
+            messages=messages,
+            response_format={"type": "json_schema", "json_schema": schema},
+            temperature=0.2,
+        )
+        content = resp.choices[0].message.content or "{}"
+        return _parse_json_strict(content)
+    except TypeError:
+        # 2) Fallback: json_object + instrucción de esquema en el mensaje del sistema
+        messages_fallback = [
+            {"role": "system", "content": f"{messages[0]['content']}\n\n"
+                                          f"Devuelve ÚNICAMENTE un JSON válido con la forma: {json.dumps(schema['schema'])} "
+                                          f"(sin ningún texto adicional)."},
+            *messages[1:]
+        ]
+        resp = client.chat.completions.create(
+            model="gpt-5-mini",
+            messages=messages_fallback,
+            response_format={"type": "json_object"},
+            temperature=0.2,
+        )
+        content = resp.choices[0].message.content or "{}"
+        return _parse_json_strict(content)
+
 def analyze_snippet(title: str, summary: str, actor: str) -> Dict[str, Any]:
     """Analiza una sola nota (título + resumen) y devuelve JSON estructurado."""
-    client = get_openai()
-    prompt = (
-        f"Actor político de interés: {actor}\n\n"
-        f"Título: {title}\n"
-        f"Resumen: {summary or '(sin resumen)'}\n"
-    )
-    resp = client.responses.create(
-        model="gpt-5-mini",
-        input=[{"role": "system", "content": SYSTEM_PROMPT_ITEM},
-               {"role": "user", "content": prompt}],
-        response_format={"type": "json_schema", "json_schema": NEWS_ANALYSIS_SCHEMA},
-        temperature=0.2,
-    )
-    return resp.output_json
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT_ITEM},
+        {"role": "user", "content": (
+            f"Actor político de interés: {actor}\n\n"
+            f"Título: {title}\n"
+            f"Resumen: {summary or '(sin resumen)'}\n"
+        )},
+    ]
+    return _chat_structured(messages, NEWS_ANALYSIS_SCHEMA)
 
 def aggregate_perspective(actor: str, analyzed_items: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
@@ -140,8 +180,7 @@ def aggregate_perspective(actor: str, analyzed_items: List[Dict[str, Any]]) -> D
     { title, source, published_at (ISO opcional), llm (JSON de NewsAnalysis) }
     y devuelve una síntesis agregada.
     """
-    client = get_openai()
-
+    # Compactamos entrada
     compact: List[Dict[str, Any]] = []
     for it in analyzed_items:
         llm = it.get("llm", {})
@@ -156,17 +195,12 @@ def aggregate_perspective(actor: str, analyzed_items: List[Dict[str, Any]]) -> D
             "perception": llm.get("perception", {})
         })
 
-    prompt = (
-        f"Actor político: {actor}\n\n"
-        f"Entradas:\n{compact}\n\n"
-        "Genera una visión agregada sólida."
-    )
-
-    resp = client.responses.create(
-        model="gpt-5-mini",
-        input=[{"role": "system", "content": SYSTEM_PROMPT_AGG},
-               {"role": "user", "content": prompt}],
-        response_format={"type": "json_schema", "json_schema": AGGREGATE_SCHEMA},
-        temperature=0.2,
-    )
-    return resp.output_json
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT_AGG},
+        {"role": "user", "content": (
+            f"Actor político: {actor}\n\n"
+            f"Entradas (compactas):\n{json.dumps(compact, ensure_ascii=False)}\n\n"
+            "Genera una visión agregada sólida."
+        )},
+    ]
+    return _chat_structured(messages, AGGREGATE_SCHEMA)
