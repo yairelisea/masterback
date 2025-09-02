@@ -132,16 +132,17 @@ def _parse_json_strict(text: str) -> Dict[str, Any]:
 
 def _chat_structured(messages: List[Dict[str, str]], schema: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Intenta usar json_schema; si el cliente no lo soporta, cae a json_object con instrucciones.
+    Intenta usar json_schema; si el cliente no lo soporta, cae a json_object.
+    OJO: no enviamos 'temperature' porque ciertos modelos no aceptan overrides (default=1).
     """
     client = get_openai()
     # 1) Intento: json_schema (estricto)
     try:
         resp = client.chat.completions.create(
-            model="gpt-5-mini",
+            model=os.getenv("OPENAI_MODEL", "gpt-5-mini"),
             messages=messages,
             response_format={"type": "json_schema", "json_schema": schema},
-            temperature=0.2,
+            # NO temperature aquí
         )
         content = resp.choices[0].message.content or "{}"
         return _parse_json_strict(content)
@@ -154,10 +155,10 @@ def _chat_structured(messages: List[Dict[str, str]], schema: Dict[str, Any]) -> 
             *messages[1:]
         ]
         resp = client.chat.completions.create(
-            model="gpt-5-mini",
+            model=os.getenv("OPENAI_MODEL", "gpt-5-mini"),
             messages=messages_fallback,
             response_format={"type": "json_object"},
-            temperature=0.2,
+            # NO temperature aquí
         )
         content = resp.choices[0].message.content or "{}"
         return _parse_json_strict(content)
