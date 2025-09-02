@@ -6,6 +6,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from .routers import campaigns, sources, ingest, analyses, news
 
 from .db import engine, Base, ping_db
 from .routers import campaigns, sources, ingest, analyses
@@ -41,3 +42,4 @@ app.include_router(campaigns.router)
 app.include_router(sources.router)
 app.include_router(ingest.router)
 app.include_router(analyses.router)
+app.include_router(news.router) 
