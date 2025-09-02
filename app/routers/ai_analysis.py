@@ -9,10 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from ..db import get_session
 from .. import models
-from ..services.llm import analyze_snippet
+from ..services.llm import analyze_snippet, aggregate_perspective
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
+# --------- Schemas de respuesta ----------
 class AnalyzedItem(BaseModel):
     title: str
     link: str
@@ -20,11 +21,20 @@ class AnalyzedItem(BaseModel):
     published_at: Optional[datetime.datetime] = None
     llm: Dict[str, Any]
 
+class AggregateView(BaseModel):
+    overall_sentiment: float
+    stance_distribution: Dict[str, int]
+    top_topics: List[str]
+    key_takeaways: List[str]
+    perception_overview: str
+
 class AnalyzeResponse(BaseModel):
     query: str
     total: int
     items: List[AnalyzedItem]
+    aggregate: Optional[AggregateView] = None
 
+# --------- Helpers RSS ----------
 def build_google_news_rss(query: str, lang: str = "es-419", country: str = "MX") -> str:
     q = f"\"{query}\""
     params = {"q": q, "hl": lang, "gl": country, "ceid": f"{country}:{lang}"}
@@ -49,6 +59,7 @@ def clean_link(url: str) -> str:
         pass
     return url
 
+# --------- Endpoint principal ----------
 @router.get("/analyze-news", response_model=AnalyzeResponse)
 async def analyze_news(
     q: str = Query(..., min_length=2, description="Actor político o frase exacta"),
@@ -56,6 +67,7 @@ async def analyze_news(
     days_back: int = Query(14, ge=1, le=90),
     lang: str = Query("es-419"),
     country: str = Query("MX"),
+    overall: bool = Query(False, description="Si true, agrega un resumen global"),
     campaignId: Optional[str] = Query(None, description="Si lo envías, guarda los análisis ligados a la campaña"),
     session: AsyncSession = Depends(get_session)
 ):
@@ -90,7 +102,7 @@ async def analyze_news(
         if len(entries) >= size:
             break
 
-    # 3) LLM por item (sin streaming para mantenerlo simple)
+    # 3) LLM por item
     analyzed: List[AnalyzedItem] = []
     for title, summary, link, source, dt in entries:
         llm_json = analyze_snippet(title=title, summary=summary, actor=q)
@@ -98,7 +110,22 @@ async def analyze_news(
             title=title, link=link, source=source, published_at=dt, llm=llm_json
         ))
 
-    # 4) Guardar en BD (opcional)
+    # 4) Agregado global (opcional)
+    agg_payload = None
+    if overall and analyzed:
+        # Convertimos a dicts sencillos para el agregador
+        simple = []
+        for it in analyzed:
+            simple.append({
+                "title": it.title,
+                "source": it.source,
+                "published_at": it.published_at.isoformat() if it.published_at else None,
+                "llm": it.llm
+            })
+        agg = aggregate_perspective(actor=q, analyzed_items=simple)
+        agg_payload = AggregateView(**agg)
+
+    # 5) Guardar en BD (opcional)
     if campaignId and analyzed:
         cres = await session.execute(select(models.Campaign).where(models.Campaign.id == campaignId))
         campaign = cres.scalar_one_or_none()
@@ -108,7 +135,8 @@ async def analyze_news(
         saved = 0
         for item in analyzed:
             h = hashlib.sha256(item.link.encode()).hexdigest()
-            # ¿ya existe IngestedItem?
+
+            # upsert IngestedItem
             exists = await session.execute(select(models.IngestedItem).where(models.IngestedItem.hash == h))
             ing = exists.scalar_one_or_none()
             if not ing:
@@ -128,14 +156,13 @@ async def analyze_news(
                 session.add(ing)
                 await session.flush()
 
-            # guarda/actualiza Analysis ligado al item
-            # asumiendo columna JSON en models.Analysis.result (o similar)
-            existing = await session.execute(
-                select(models.Analysis).where(models.Analysis.itemId == ing.id)
-            )
-            ana = existing.scalar_one_or_none()
+            # upsert Analysis (asumiendo columna JSON en models.Analysis.result)
+            found = await session.execute(select(models.Analysis).where(models.Analysis.itemId == ing.id))
+            ana = found.scalar_one_or_none()
             if ana:
-                ana.result = item.llm  # dict JSON
+                ana.result = item.llm
+                ana.model = "gpt-5-mini"
+                ana.analysisType = "news_sentiment"
             else:
                 session.add(models.Analysis(
                     id=str(uuid.uuid4()),
@@ -145,7 +172,8 @@ async def analyze_news(
                     analysisType="news_sentiment"
                 ))
             saved += 1
+
         if saved:
             await session.commit()
 
-    return AnalyzeResponse(query=q, total=len(analyzed), items=analyzed)
+    return AnalyzeResponse(query=q, total=len(analyzed), items=analyzed, aggregate=agg_payload)
