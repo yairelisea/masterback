@@ -1,3 +1,7 @@
+import sys
+print("PY:", sys.version)
+from .db import engine
+print("DB:", engine.dialect.name, getattr(engine.dialect, "driver", "unknown"))
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
