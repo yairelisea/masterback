@@ -1,47 +1,60 @@
-import sys
-print("PY:", sys.version)
-from .db import engine
-print("DB:", engine.dialect.name, getattr(engine.dialect, "driver", "unknown"))
+# app/main.py
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
-from .routers import campaigns, sources, ingest, analyses, news
+from fastapi.responses import RedirectResponse
 
-from .db import engine, Base, ping_db
-from .routers import campaigns, sources, ingest, analyses, news, ai_analysis  # + ai_analysis
-...
-app.include_router(ai_analysis.router)
+# Importa Base y engine para crear tablas en startup
+from .models import Base
+from .db import engine
 
-load_dotenv()  # carga .env si existe
+# Importa routers (haz que existan estos archivos según tu proyecto)
+from .routers import campaigns, sources, ingest, analyses, news, ai_analysis
 
-ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+# ---- Crea la app ANTES de usar include_router ----
+app = FastAPI(title="BBX API", version="0.1.0")
 
-app = FastAPI(title="BBX FastAPI Backend")
+# ---- CORS ----
+origins = []
+raw_origins = os.getenv("ALLOWED_ORIGINS", "")
+if raw_origins:
+    # separar por coma y limpiar espacios
+    origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS or ["*"],
+    allow_origins=origins or ["*"],  # si no mandas env var, permite todo (ajústalo en prod)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.on_event("startup")
-async def on_startup():
-    # crea tablas si no existen
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
+# ---- Rutas base útiles ----
 @app.get("/health")
-async def health():
-    await ping_db()
+def health():
     return {"ok": True}
 
-# Routers
+@app.get("/")
+def root():
+    # redirige a la documentación interactiva
+    return RedirectResponse(url="/docs")
+
+@app.get("/favicon.ico")
+def favicon_empty():
+    # evita 404 por favicon hasta que subas uno real
+    return Response(status_code=204)
+
+# ---- Incluye routers (DESPUÉS de crear app) ----
 app.include_router(campaigns.router)
 app.include_router(sources.router)
 app.include_router(ingest.router)
 app.include_router(analyses.router)
-app.include_router(news.router) 
+app.include_router(news.router)
+app.include_router(ai_analysis.router)
+
+# ---- Startup: crea tablas si no existen ----
+@app.on_event("startup")
+async def on_startup():
+    # crea tablas de forma asíncrona
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
