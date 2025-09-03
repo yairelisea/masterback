@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
-    async_sessionmaker,
+    async_sessionmaker,   # ✅ ESTE es el correcto
     AsyncSession,
 )
 
@@ -15,15 +15,12 @@ if DATABASE_URL.startswith("postgres://"):
 elif DATABASE_URL.startswith("postgresql://") and "+psycopg" not in DATABASE_URL:
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 
-engine = create_async_engine(
-    DATABASE_URL,
-    echo=False,   # pon True si quieres ver SQL en logs
-    future=True,
-)
+engine = create_async_engine(DATABASE_URL, echo=False, future=True)
 
-SessionLocal = get_sessionmaker(bind=engine, expire_on_commit=False, class_=AsyncSession)
+# ✅ Aquí estaba el error, usa async_sessionmaker
+SessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False, class_=AsyncSession)
 
-# Dependencia FastAPI: inyecta una sesión por request
+# Dependencia para FastAPI
 async def get_session() -> AsyncSession:
     async with SessionLocal() as session:
         yield session
