@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from sqlalchemy.ext.asyncio import (
     create_async_engine,
-    get_sessionmaker,
+    async_sessionmaker,
     AsyncSession,
 )
 
