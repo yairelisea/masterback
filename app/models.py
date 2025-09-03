@@ -14,8 +14,6 @@ from sqlalchemy import (
     JSON,
     Text,
     Enum,
-    Index,
-    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship, declarative_base
 
@@ -75,9 +73,9 @@ class SourceLink(Base):
     url: Mapped[str] = mapped_column(Text, nullable=False)
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
-    __table_args__ = (
-        ,
-    )
+    # Importante: dejamos __table_args__ vacío para que los índices/unique
+    # se creen de forma idempotente en main.py (IF NOT EXISTS).
+    __table_args__ = ()
 
     campaign = relationship("Campaign", back_populates="sources", lazy="joined")
 
@@ -155,7 +153,7 @@ class Subscription(Base):
 
     user = relationship("User")
     plan = relationship("Plan")
-    
+
 
 # ------------------------
 # Alerts
