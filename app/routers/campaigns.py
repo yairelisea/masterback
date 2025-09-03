@@ -1,4 +1,3 @@
-# app/routers/campaigns.py
 from __future__ import annotations
 
 from fastapi import APIRouter, Header, HTTPException, Depends, Request
@@ -6,15 +5,21 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
+from .. import models, schemas
 from ..models import Campaign, User
 from ..schemas import CampaignCreate, CampaignOut
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
+
 def _to_out(c: Campaign) -> CampaignOut:
-    # thanks to from_attributes=True en CampaignOut
+    # gracias a from_attributes=True en CampaignOut
     return CampaignOut.model_validate(c)
 
+
+# ------------------------
+# List campaigns
+# ------------------------
 @router.get("", response_model=list[CampaignOut])
 async def list_campaigns(
     request: Request,
@@ -23,19 +28,24 @@ async def list_campaigns(
     all: bool | None = None,
     db: AsyncSession = Depends(get_session),
 ):
-    # Debug mínimo
-    # print("GET /campaigns headers:", dict(request.headers))
-
     if x_admin == "true" or all is True:
         q = select(Campaign).order_by(Campaign.createdAt.desc())
     else:
         if not x_user_id:
             return []
-        q = select(Campaign).where(Campaign.userId == x_user_id).order_by(Campaign.createdAt.desc())
+        q = (
+            select(Campaign)
+            .where(Campaign.userId == x_user_id)
+            .order_by(Campaign.createdAt.desc())
+        )
 
     rows = (await db.execute(q)).scalars().all()
     return [_to_out(c) for c in rows]
 
+
+# ------------------------
+# Create campaign
+# ------------------------
 @router.post("", response_model=CampaignOut)
 async def create_campaign(
     payload: CampaignCreate,
@@ -46,12 +56,12 @@ async def create_campaign(
     if not x_user_id:
         raise HTTPException(status_code=400, detail="Missing x-user-id header")
 
-    # 1) Asegura que exista el usuario para no romper la FK
-    result = await db.execute(select(models.User).where(models.User.id == x_user_id))
+    # 1) Asegura que exista el usuario
+    result = await db.execute(select(User).where(User.id == x_user_id))
     user = result.scalar_one_or_none()
-        # Autocreación mínima; ajusta email/name si hace falta
-        if not user:
-        user = models.User(
+
+    if not user:
+        user = User(
             id=x_user_id,
             email=f"{x_user_id}@example.com",
             name=x_user_id,
@@ -60,7 +70,7 @@ async def create_campaign(
         await db.flush()
 
     # 2) Crea la campaña
-campaign = models.Campaign(
+    campaign = Campaign(
         name=payload.name,
         query=payload.query,
         size=payload.size,
@@ -74,8 +84,12 @@ campaign = models.Campaign(
     await db.commit()
     await db.refresh(campaign)
 
-    return schemas.CampaignOut.model_validate(campaign)
+    return _to_out(campaign)
 
+
+# ------------------------
+# Get campaign by ID
+# ------------------------
 @router.get("/{campaign_id}", response_model=CampaignOut)
 async def get_campaign(
     campaign_id: str,
@@ -86,6 +100,8 @@ async def get_campaign(
     c = await db.get(Campaign, campaign_id)
     if not c:
         raise HTTPException(status_code=404, detail="Campaign not found")
+
     if not (x_admin == "true" or (x_user_id and x_user_id == c.userId)):
         raise HTTPException(status_code=403, detail="Forbidden")
+
     return _to_out(c)
