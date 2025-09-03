@@ -47,16 +47,20 @@ async def create_campaign(
         raise HTTPException(status_code=400, detail="Missing x-user-id header")
 
     # 1) Asegura que exista el usuario para no romper la FK
-    user = await db.get(User, x_user_id)
-    if not user:
+    result = await db.execute(select(models.User).where(models.User.id == x_user_id))
+    user = result.scalar_one_or_none()
         # Autocreación mínima; ajusta email/name si hace falta
-        user = User(id=x_user_id, email=f"{x_user_id}@example.com", name=x_user_id)
+        if not user:
+        user = models.User(
+            id=x_user_id,
+            email=f"{x_user_id}@example.com",
+            name=x_user_id,
+        )
         db.add(user)
-        # flush para tener el user disponible en la transacción actual
         await db.flush()
 
     # 2) Crea la campaña
-    c = Campaign(
+campaign = models.Campaign(
         name=payload.name,
         query=payload.query,
         size=payload.size,
@@ -66,10 +70,11 @@ async def create_campaign(
         city_keywords=payload.city_keywords,
         userId=x_user_id,
     )
-    db.add(c)
+    db.add(campaign)
     await db.commit()
-    await db.refresh(c)
-    return CampaignOut.model_validate(c)
+    await db.refresh(campaign)
+
+    return schemas.CampaignOut.model_validate(campaign)
 
 @router.get("/{campaign_id}", response_model=CampaignOut)
 async def get_campaign(
