@@ -1,8 +1,23 @@
-from sqlalchemy import String, DateTime, Boolean, Integer, ForeignKey, JSON, Text, Enum, Index,
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import JSONB
-from datetime import datetime
+from __future__ import annotations
+
+import datetime
 import enum
+import uuid
+
+from sqlalchemy import (
+    String,
+    DateTime,
+    Boolean,
+    Integer,
+    ForeignKey,
+    JSON,
+    Text,
+    Enum,
+    Index,  # <- necesario para __table_args__
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship, declarative_base
+
+Base = declarative_base()
 
 from .db import Base
 
