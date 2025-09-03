@@ -108,3 +108,38 @@ class Analysis(Base):
         Index("idx_analysis_campaign_createdAt", "campaignId", "createdAt"),
         Index("idx_analysis_item", "itemId"),
     )
+    from sqlalchemy import String, DateTime, Boolean, Integer, ForeignKey, JSON, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+import datetime, uuid
+
+class Alert(Base):
+    __tablename__ = "alerts"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: str(uuid.uuid4()))
+    userId: Mapped[str] = mapped_column(String(50), ForeignKey("users.id"), index=True)
+    campaignId: Mapped[str | None] = mapped_column(String(40), ForeignKey("campaigns.id"), nullable=True)
+    name: Mapped[str] = mapped_column(String(160))
+    scheduleCron: Mapped[str] = mapped_column(String(80), default="0 12 * * *")  # diario 12:00
+    timezone: Mapped[str] = mapped_column(String(64), default="America/Monterrey")
+    analyze: Mapped[bool] = mapped_column(Boolean, default=True)  # analizar con LLM
+    isActive: Mapped[bool] = mapped_column(Boolean, default=True)
+    createdAt: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=datetime.datetime.utcnow)
+
+class AlertQuery(Base):
+    __tablename__ = "alert_queries"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: str(uuid.uuid4()))
+    alertId: Mapped[str] = mapped_column(String(40), ForeignKey("alerts.id"), index=True)
+    q: Mapped[str] = mapped_column(String(300))
+    country: Mapped[str] = mapped_column(String(8), default="MX")
+    lang: Mapped[str] = mapped_column(String(16), default="es-419")
+    daysBack: Mapped[int] = mapped_column(Integer, default=14)
+    size: Mapped[int] = mapped_column(Integer, default=35)
+    cityKeywords: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+
+class AlertNotification(Base):
+    __tablename__ = "alert_notifications"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: str(uuid.uuid4()))
+    alertId: Mapped[str] = mapped_column(String(40), ForeignKey("alerts.id"), index=True)
+    createdAt: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=datetime.datetime.utcnow)
+    itemsCount: Mapped[int] = mapped_column(Integer, default=0)
+    # opcional: resumen global del batch
+    aggregate: Mapped[dict | None] = mapped_column(JSON, nullable=True)

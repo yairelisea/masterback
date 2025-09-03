@@ -70,3 +70,5 @@ app.include_router(ai_analysis.router)
 async def on_startup():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+        
