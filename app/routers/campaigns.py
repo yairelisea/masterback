@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
-from ..models import Campaign
+from ..models import Campaign, User
 from ..schemas import CampaignCreate, CampaignOut
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
@@ -43,13 +43,19 @@ async def create_campaign(
     x_user_id: str | None = Header(default=None),
     db: AsyncSession = Depends(get_session),
 ):
-    # Debug mínimo
-    # print("POST /campaigns headers:", dict(request.headers))
-    # print("POST /campaigns payload:", payload.model_dump())
-
     if not x_user_id:
         raise HTTPException(status_code=400, detail="Missing x-user-id header")
 
+    # 1) Asegura que exista el usuario para no romper la FK
+    user = await db.get(User, x_user_id)
+    if not user:
+        # Autocreación mínima; ajusta email/name si hace falta
+        user = User(id=x_user_id, email=f"{x_user_id}@example.com", name=x_user_id)
+        db.add(user)
+        # flush para tener el user disponible en la transacción actual
+        await db.flush()
+
+    # 2) Crea la campaña
     c = Campaign(
         name=payload.name,
         query=payload.query,
@@ -63,7 +69,7 @@ async def create_campaign(
     db.add(c)
     await db.commit()
     await db.refresh(c)
-    return _to_out(c)
+    return CampaignOut.model_validate(c)
 
 @router.get("/{campaign_id}", response_model=CampaignOut)
 async def get_campaign(
