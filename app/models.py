@@ -76,9 +76,7 @@ class SourceLink(Base):
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     __table_args__ = (
-        Index("idx_source_campaign_type", "campaignId", "type"),
-        Index("idx_source_url", "url"),
-        UniqueConstraint("campaignId", "url"),
+        ,
     )
 
     campaign = relationship("Campaign", back_populates="sources", lazy="joined")

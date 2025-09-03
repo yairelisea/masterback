@@ -4,6 +4,7 @@ from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.routing import APIRoute
+from sqlalchemy import text
 
 # Importa Base y engine para crear tablas en startup
 from .models import Base
@@ -68,7 +69,17 @@ app.include_router(ai_analysis.router)
 # ---- Startup: crea tablas si no existen ----
 @app.on_event("startup")
 async def on_startup():
+    # crea tablas
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-        
+        # crea índices/unique de forma idempotente (no fallan si ya existen)
+        await conn.exec_driver_sql(
+            'CREATE INDEX IF NOT EXISTS idx_source_campaign_type ON source_links ("campaignId", type)'
+        )
+        await conn.exec_driver_sql(
+            'CREATE INDEX IF NOT EXISTS idx_source_url ON source_links (url)'
+        )
+        await conn.exec_driver_sql(
+            'CREATE UNIQUE INDEX IF NOT EXISTS uq_source_campaign_url ON source_links ("campaignId", url)'
+        )
