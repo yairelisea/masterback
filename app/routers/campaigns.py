@@ -84,6 +84,9 @@ async def create_campaign(
     await db.commit()
     await db.refresh(campaign)
 
+    print(f"[CREATE CAMPAIGN] id={campaign.id} userId={campaign.userId} name={campaign.name}")
+
+
     return _to_out(campaign)
 
 
