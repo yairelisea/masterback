@@ -9,61 +9,62 @@ from sqlalchemy import (
     DateTime,
     Boolean,
     Integer,
+    Float,
     ForeignKey,
     JSON,
     Text,
     Enum,
     Index,
     UniqueConstraint,
-    
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship, declarative_base
 
 Base = declarative_base()
-from sqlalchemy.orm import Mapped, mapped_column, relationship, declarative_base
 
-Base = declarative_base()
-
-from .db import Base
-
-class SourceType(str, enum.Enum):
-    NEWS = "NEWS"
-    FACEBOOK = "FACEBOOK"
-    INSTAGRAM = "INSTAGRAM"
-    X = "X"
-    YOUTUBE = "YOUTUBE"
-    TIKTOK = "TIKTOK"
-
-class ItemStatus(str, enum.Enum):
-    QUEUED = "QUEUED"
-    FETCHED = "FETCHED"
-    ANALYZED = "ANALYZED"
-    ERROR = "ERROR"
-
+# ------------------------
+# User
+# ------------------------
 class User(Base):
-    __tablename__ = "User"
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    email: Mapped[str] = mapped_column(String, unique=True, index=True)
-    name: Mapped[str | None] = mapped_column(String, nullable=True)
-    role: Mapped[str] = mapped_column(String, default="admin")
-    createdAt: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updatedAt: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    campaigns: Mapped[list["Campaign"]] = relationship(back_populates="owner")
+    __tablename__ = "users"
 
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    email: Mapped[str] = mapped_column(String(200), unique=True, index=True, nullable=False)
+    name: Mapped[str | None] = mapped_column(String(200))
+    createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+# ------------------------
+# Campaign
+# ------------------------
 class Campaign(Base):
-    __tablename__ = "Campaign"
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    name: Mapped[str] = mapped_column(String)
-    slug: Mapped[str] = mapped_column(String, unique=True, index=True)
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    ownerId: Mapped[str] = mapped_column(String, ForeignKey("User.id"))
-    owner: Mapped[User] = relationship(back_populates="campaigns")
-    createdAt: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updatedAt: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    __tablename__ = "campaigns"
 
-    sources: Mapped[list["SourceLink"]] = relationship(back_populates="campaign", cascade="all, delete-orphan")
-    items: Mapped[list["IngestedItem"]] = relationship(back_populates="campaign", cascade="all, delete-orphan")
-    analyses: Mapped[list["Analysis"]] = relationship(back_populates="campaign", cascade="all, delete-orphan")
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    query: Mapped[str] = mapped_column(String(300), nullable=False)
+    size: Mapped[int] = mapped_column(Integer, default=25)
+    days_back: Mapped[int] = mapped_column(Integer, default=14)
+    lang: Mapped[str] = mapped_column(String(16), default="es-419")
+    country: Mapped[str] = mapped_column(String(8), default="MX")
+    city_keywords: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    userId: Mapped[str | None] = mapped_column(String(50), ForeignKey("users.id"))
+    user = relationship("User")
+
+    sources = relationship("SourceLink", back_populates="campaign")
+    analyses = relationship("Analysis", back_populates="campaign")
+
+
+# ------------------------
+# SourceLink
+# ------------------------
+class SourceType(enum.Enum):
+    NEWS = "NEWS"
+    RSS = "RSS"
+    TWITTER = "TWITTER"
+    OTHER = "OTHER"
+
 
 class SourceLink(Base):
     __tablename__ = "source_links"
@@ -77,75 +78,105 @@ class SourceLink(Base):
     __table_args__ = (
         Index("idx_source_campaign_type", "campaignId", "type"),
         Index("idx_source_url", "url"),
-        UniqueConstraint("campaignId", "url", name="uq_source_campaign_url"),  # <- ya funciona
+        UniqueConstraint("campaignId", "url", name="uq_source_campaign_url"),
     )
 
     campaign = relationship("Campaign", back_populates="sources", lazy="joined")
 
+
+# ------------------------
+# IngestedItem
+# ------------------------
+class ItemStatus(enum.Enum):
+    PENDING = "PENDING"
+    PROCESSED = "PROCESSED"
+    ERROR = "ERROR"
+
+
 class IngestedItem(Base):
-    __tablename__ = "IngestedItem"
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    campaignId: Mapped[str] = mapped_column(String, ForeignKey("Campaign.id"))
-    campaign: Mapped[Campaign] = relationship(back_populates="items")
-    sourceType: Mapped[SourceType] = mapped_column(Enum(SourceType))
-    sourceUrl: Mapped[str] = mapped_column(String)
-    author: Mapped[str | None] = mapped_column(String, nullable=True)
-    title: Mapped[str | None] = mapped_column(String, nullable=True)
-    excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
-    contentUrl: Mapped[str] = mapped_column(String)
-    publishedAt: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    fetchedAt: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    status: Mapped[ItemStatus] = mapped_column(Enum(ItemStatus), default=ItemStatus.QUEUED)
-    hash: Mapped[str] = mapped_column(String, unique=True)
+    __tablename__ = "ingested_items"
 
-    analyses: Mapped[list["Analysis"]] = relationship(back_populates="item", cascade="all, delete-orphan")
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: str(uuid.uuid4()))
+    sourceId: Mapped[str | None] = mapped_column(String(40), ForeignKey("source_links.id"))
+    campaignId: Mapped[str | None] = mapped_column(String(40), ForeignKey("campaigns.id"))
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    publishedAt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[ItemStatus] = mapped_column(Enum(ItemStatus), default=ItemStatus.PENDING)
+    createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
-    __table_args__ = (
-        Index("idx_item_campaign_source_status", "campaignId", "sourceType", "status"),
-        Index("idx_item_publishedAt", "publishedAt"),
-    )
 
+# ------------------------
+# Analysis
+# ------------------------
 class Analysis(Base):
-    __tablename__ = "Analysis"
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    campaignId: Mapped[str] = mapped_column(String, ForeignKey("Campaign.id"))
-    campaign: Mapped[Campaign] = relationship(back_populates="analyses")
+    __tablename__ = "analyses"
 
-    itemId: Mapped[str | None] = mapped_column(String, ForeignKey("IngestedItem.id"), nullable=True)
-    item: Mapped["IngestedItem | None"] = relationship(back_populates="analyses")
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: str(uuid.uuid4()))
+    campaignId: Mapped[str] = mapped_column(String(40), ForeignKey("campaigns.id"), index=True)
+    itemId: Mapped[str | None] = mapped_column(String(40), ForeignKey("ingested_items.id"))
 
-    model: Mapped[str] = mapped_column(String)
-    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     sentiment: Mapped[float | None] = mapped_column(Float, nullable=True)
-    stance: Mapped[str | None] = mapped_column(String, nullable=True)
-    topics: Mapped[dict | list | None] = mapped_column(JSONB, nullable=True)
-    entities: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tone: Mapped[str | None] = mapped_column(String(50))
+    topics: Mapped[list[str] | None] = mapped_column(JSON)
+    summary: Mapped[str | None] = mapped_column(Text)
+    entities: Mapped[dict | None] = mapped_column(JSON)
+    stance: Mapped[str | None] = mapped_column(String(50))
+    perception: Mapped[dict | None] = mapped_column(JSON)
 
-    createdAt: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
-    __table_args__ = (
-        Index("idx_analysis_campaign_createdAt", "campaignId", "createdAt"),
-        Index("idx_analysis_item", "itemId"),
-    )
-    from sqlalchemy import String, DateTime, Boolean, Integer, ForeignKey, JSON, Text
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-import datetime, uuid
+    campaign = relationship("Campaign", back_populates="analyses")
 
-class Alert(Base):
-    __tablename__ = "alerts"
+
+# ------------------------
+# Plan / Subscription
+# ------------------------
+class Plan(Base):
+    __tablename__ = "plans"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    maxResultsPerSearch: Mapped[int] = mapped_column(Integer, default=25)
+    maxDaysBack: Mapped[int] = mapped_column(Integer, default=14)
+    maxConcurrentAnalyses: Mapped[int] = mapped_column(Integer, default=5)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    isActive: Mapped[bool] = mapped_column(Boolean, default=True)
+    createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+class Subscription(Base):
+    __tablename__ = "subscriptions"
+
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: str(uuid.uuid4()))
     userId: Mapped[str] = mapped_column(String(50), ForeignKey("users.id"), index=True)
-    campaignId: Mapped[str | None] = mapped_column(String(40), ForeignKey("campaigns.id"), nullable=True)
-    name: Mapped[str] = mapped_column(String(160))
-    scheduleCron: Mapped[str] = mapped_column(String(80), default="0 12 * * *")  # diario 12:00
-    timezone: Mapped[str] = mapped_column(String(64), default="America/Monterrey")
-    analyze: Mapped[bool] = mapped_column(Boolean, default=True)  # analizar con LLM
+    planId: Mapped[str] = mapped_column(String(40), ForeignKey("plans.id"), index=True)
     isActive: Mapped[bool] = mapped_column(Boolean, default=True)
-    createdAt: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=datetime.datetime.utcnow)
+    startedAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    endsAt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    user = relationship("User")
+    plan = relationship("Plan")
+    
+
+# ------------------------
+# Alerts
+# ------------------------
+class Alert(Base):
+    __tablename__ = "alerts"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: str(uuid.uuid4()))
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    userId: Mapped[str] = mapped_column(String(50), ForeignKey("users.id"), index=True)
+    isActive: Mapped[bool] = mapped_column(Boolean, default=True)
+    createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    user = relationship("User")
+
 
 class AlertQuery(Base):
     __tablename__ = "alert_queries"
+
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: str(uuid.uuid4()))
     alertId: Mapped[str] = mapped_column(String(40), ForeignKey("alerts.id"), index=True)
     q: Mapped[str] = mapped_column(String(300))
@@ -155,11 +186,11 @@ class AlertQuery(Base):
     size: Mapped[int] = mapped_column(Integer, default=35)
     cityKeywords: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
+
 class AlertNotification(Base):
     __tablename__ = "alert_notifications"
+
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: str(uuid.uuid4()))
     alertId: Mapped[str] = mapped_column(String(40), ForeignKey("alerts.id"), index=True)
-    createdAt: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), default=datetime.datetime.utcnow)
-    itemsCount: Mapped[int] = mapped_column(Integer, default=0)
-    # opcional: resumen global del batch
-    aggregate: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    content: Mapped[dict] = mapped_column(JSON, nullable=False)
+    createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
