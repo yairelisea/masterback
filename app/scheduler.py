@@ -4,7 +4,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from .db import async_session
+from .db import get_session
 from . import models
 from .services.news_fetcher import fetch_news
 from .services.llm import analyze_snippet, aggregate_perspective
@@ -13,7 +13,7 @@ log = logging.getLogger("scheduler")
 scheduler: AsyncIOScheduler | None = None
 
 async def run_alert(alert: models.Alert):
-    async with async_session() as session:
+    async with get_session() as session:
         # cargar queries de la alerta
         qres = await session.execute(select(models.AlertQuery).where(models.AlertQuery.alertId == alert.id))
         queries = qres.scalars().all()
@@ -98,7 +98,7 @@ async def schedule_alert(alert: models.Alert):
     log.info("Programada alerta %s (%s %s)", alert.name, alert.scheduleCron, alert.timezone)
 
 async def load_alerts_and_schedule():
-    async with async_session() as session:
+    async with get_session() as session:
         res = await session.execute(select(models.Alert).where(models.Alert.isActive == True))
         for alert in res.scalars().all():
             await schedule_alert(alert)

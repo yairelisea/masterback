@@ -5,14 +5,10 @@ from fastapi import APIRouter, Header, HTTPException, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..db import async_session
+from ..db import get_session
 from ..models import Campaign
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
-
-async def get_db() -> AsyncSession:
-    async with async_session() as session:
-        yield session
 
 def _serialize_campaign(c: Campaign) -> dict:
     return {
@@ -33,18 +29,18 @@ async def list_campaigns(
     x_user_id: str | None = Header(default=None),
     x_admin: str | None = Header(default=None),
     all: bool | None = None,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_session),
 ):
-    # Logs mínimos (puedes quitar luego)
-    # print("x-user-id:", x_user_id, "x-admin:", x_admin, "all:", all)
-
     if x_admin == "true" or all is True:
         q = select(Campaign).order_by(Campaign.createdAt.desc())
     else:
         if not x_user_id:
-            # sin user-id, devolvemos lista vacía (o puedes hacer 401)
             return []
-        q = select(Campaign).where(Campaign.userId == x_user_id).order_by(Campaign.createdAt.desc())
+        q = (
+            select(Campaign)
+            .where(Campaign.userId == x_user_id)
+            .order_by(Campaign.createdAt.desc())
+        )
 
     rows = (await db.execute(q)).scalars().all()
     return [_serialize_campaign(c) for c in rows]
@@ -53,7 +49,7 @@ async def list_campaigns(
 async def create_campaign(
     payload: dict,
     x_user_id: str | None = Header(default=None),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_session),
 ):
     if not x_user_id:
         raise HTTPException(status_code=400, detail="Missing x-user-id header")
@@ -83,7 +79,7 @@ async def get_campaign(
     campaign_id: str,
     x_user_id: str | None = Header(default=None),
     x_admin: str | None = Header(default=None),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_session),
 ):
     c = await db.get(Campaign, campaign_id)
     if not c:
