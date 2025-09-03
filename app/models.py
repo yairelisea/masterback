@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import datetime
 import enum
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import (
     String,
@@ -13,8 +13,11 @@ from sqlalchemy import (
     JSON,
     Text,
     Enum,
-    Index,  # <- necesario para __table_args__
+    Index,
 )
+from sqlalchemy.orm import Mapped, mapped_column, relationship, declarative_base
+
+Base = declarative_base()
 from sqlalchemy.orm import Mapped, mapped_column, relationship, declarative_base
 
 Base = declarative_base()
