@@ -1,37 +1,33 @@
-from pydantic import BaseModel, Field, AnyUrl, EmailStr
-from typing import Optional, List, Any, Literal
+# app/schemas.py
+from __future__ import annotations
+from typing import Optional, List
 from datetime import datetime
+from pydantic import BaseModel, Field
 
-SourceTypeLiteral = Literal["NEWS","FACEBOOK","INSTAGRAM","X","YOUTUBE","TIKTOK"]
-
+# -------- Campaign --------
 class CampaignCreate(BaseModel):
+    name: str = Field(..., min_length=2, max_length=200)
+    query: str = Field(..., min_length=1, max_length=300)
+    size: int = 25
+    days_back: int = Field(14, alias="days_back")
+    lang: str = "es-419"
+    country: str = "MX"
+    city_keywords: Optional[List[str]] = None
+
+    class Config:
+        populate_by_name = True  # acepta "days_back" o "daysBack"
+
+class CampaignOut(BaseModel):
+    id: str
     name: str
-    slug: str
-    description: Optional[str] = None
-    ownerEmail: EmailStr = "admin@bbx.local"
+    query: str
+    size: int
+    days_back: int
+    lang: str
+    country: str
+    city_keywords: Optional[list[str]] = None
+    userId: Optional[str] = None
+    createdAt: Optional[datetime] = None
 
-class SourceCreate(BaseModel):
-    type: SourceTypeLiteral
-    url: AnyUrl
-    label: Optional[str] = None
-
-class IngestCreate(BaseModel):
-    campaignId: str
-    sourceType: SourceTypeLiteral
-    sourceUrl: AnyUrl
-    contentUrl: AnyUrl
-    author: Optional[str] = None
-    title: Optional[str] = None
-    excerpt: Optional[str] = None
-    publishedAt: Optional[datetime] = None
-
-class AnalyzeCreate(BaseModel):
-    campaignId: str
-    itemId: Optional[str] = None
-    model: str = "gpt-5"
-    summary: Optional[str] = None
-    sentiment: Optional[float] = Field(default=None, ge=-1, le=1)
-    stance: Optional[str] = None
-    topics: Optional[List[Any]] = None
-    entities: Optional[Any] = None
-    score: Optional[float] = None
+    class Config:
+        from_attributes = True  # permite .from_orm()
