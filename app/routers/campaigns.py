@@ -1,54 +1,93 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-import uuid
+# app/routers/campaigns.py
+from __future__ import annotations
 
-from ..db import get_session
-from .. import models, schemas
+from fastapi import APIRouter, Header, HTTPException, Depends
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..db import async_session
+from ..models import Campaign
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
+async def get_db() -> AsyncSession:
+    async with async_session() as session:
+        yield session
+
+def _serialize_campaign(c: Campaign) -> dict:
+    return {
+        "id": c.id,
+        "name": c.name,
+        "query": c.query,
+        "size": c.size,
+        "days_back": c.days_back,
+        "lang": c.lang,
+        "country": c.country,
+        "city_keywords": c.city_keywords,
+        "userId": c.userId,
+        "createdAt": c.createdAt.isoformat() if c.createdAt else None,
+    }
+
 @router.get("")
-async def list_campaigns(session: AsyncSession = Depends(get_session)):
-    stmt = select(models.Campaign).order_by(models.Campaign.createdAt.desc())
-    res = await session.execute(stmt)
-    campaigns = res.scalars().all()
-    # eager sources
-    out = []
-    for c in campaigns:
-        sources_stmt = select(models.SourceLink).where(models.SourceLink.campaignId == c.id)
-        sres = await session.execute(sources_stmt)
-        sources = sres.scalars().all()
-        out.append({
-            "id": c.id, "name": c.name, "slug": c.slug, "description": c.description,
-            "ownerId": c.ownerId, "createdAt": c.createdAt, "updatedAt": c.updatedAt,
-            "sources": [ { "id": s.id, "type": s.type, "label": s.label, "url": s.url, "isActive": s.isActive } for s in sources ]
-        })
-    return out
+async def list_campaigns(
+    x_user_id: str | None = Header(default=None),
+    x_admin: str | None = Header(default=None),
+    all: bool | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    # Logs mínimos (puedes quitar luego)
+    # print("x-user-id:", x_user_id, "x-admin:", x_admin, "all:", all)
 
-@router.post("", status_code=201)
-async def create_campaign(payload: schemas.CampaignCreate, session: AsyncSession = Depends(get_session)):
-    # upsert owner by email
-    stmt_user = select(models.User).where(models.User.email == payload.ownerEmail)
-    res = await session.execute(stmt_user)
-    user = res.scalar_one_or_none()
-    if not user:
-        user = models.User(id=str(uuid.uuid4()), email=payload.ownerEmail, name=payload.ownerEmail.split("@")[0])
-        session.add(user)
-        await session.flush()
+    if x_admin == "true" or all is True:
+        q = select(Campaign).order_by(Campaign.createdAt.desc())
+    else:
+        if not x_user_id:
+            # sin user-id, devolvemos lista vacía (o puedes hacer 401)
+            return []
+        q = select(Campaign).where(Campaign.userId == x_user_id).order_by(Campaign.createdAt.desc())
 
-    # unique slug
-    check = await session.execute(select(models.Campaign).where(models.Campaign.slug == payload.slug))
-    if check.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="slug ya existe")
+    rows = (await db.execute(q)).scalars().all()
+    return [_serialize_campaign(c) for c in rows]
 
-    camp = models.Campaign(
-        id=str(uuid.uuid4()),
-        name=payload.name,
-        slug=payload.slug,
-        description=payload.description,
-        ownerId=user.id,
+@router.post("")
+async def create_campaign(
+    payload: dict,
+    x_user_id: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    if not x_user_id:
+        raise HTTPException(status_code=400, detail="Missing x-user-id header")
+
+    name = payload.get("name")
+    query = payload.get("query")
+    if not name or not query:
+        raise HTTPException(status_code=400, detail="name and query are required")
+
+    c = Campaign(
+        name=name,
+        query=query,
+        size=int(payload.get("size") or 25),
+        days_back=int(payload.get("days_back") or 14),
+        lang=payload.get("lang") or "es-419",
+        country=payload.get("country") or "MX",
+        city_keywords=payload.get("city_keywords"),
+        userId=x_user_id,
     )
-    session.add(camp)
-    await session.commit()
-    return {"id": camp.id, "name": camp.name, "slug": camp.slug}
+    db.add(c)
+    await db.commit()
+    await db.refresh(c)
+    return _serialize_campaign(c)
+
+@router.get("/{campaign_id}")
+async def get_campaign(
+    campaign_id: str,
+    x_user_id: str | None = Header(default=None),
+    x_admin: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    c = await db.get(Campaign, campaign_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if not (x_admin == "true" or (x_user_id and x_user_id == c.userId)):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return _serialize_campaign(c)
