@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.routing import APIRoute
 from sqlalchemy import text
+from .routers import campaigns
 
 # Importa Base y engine para crear tablas en startup
 from .models import Base
