@@ -14,6 +14,8 @@ from sqlalchemy import (
     Text,
     Enum,
     Index,
+    UniqueConstraint,
+    
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship, declarative_base
 
@@ -64,21 +66,21 @@ class Campaign(Base):
     analyses: Mapped[list["Analysis"]] = relationship(back_populates="campaign", cascade="all, delete-orphan")
 
 class SourceLink(Base):
-    __tablename__ = "SourceLink"
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    campaignId: Mapped[str] = mapped_column(String, ForeignKey("Campaign.id"))
-    campaign: Mapped[Campaign] = relationship(back_populates="sources")
-    type: Mapped[SourceType] = mapped_column(Enum(SourceType))
-    label: Mapped[str | None] = mapped_column(String, nullable=True)
-    url: Mapped[str] = mapped_column(String)
-    isActive: Mapped[bool] = mapped_column(Boolean, default=True)
-    createdAt: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updatedAt: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    __tablename__ = "source_links"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: str(uuid.uuid4()))
+    campaignId: Mapped[str | None] = mapped_column(String(40), ForeignKey("campaigns.id"), index=True, nullable=True)
+    type: Mapped[SourceType] = mapped_column(Enum(SourceType), nullable=False, default=SourceType.NEWS)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     __table_args__ = (
         Index("idx_source_campaign_type", "campaignId", "type"),
-        UniqueConstraint("campaignId", "url", name="uq_source_campaign_url"),
+        Index("idx_source_url", "url"),
+        UniqueConstraint("campaignId", "url", name="uq_source_campaign_url"),  # <- ya funciona
     )
+
+    campaign = relationship("Campaign", back_populates="sources", lazy="joined")
 
 class IngestedItem(Base):
     __tablename__ = "IngestedItem"
