@@ -8,6 +8,7 @@ from ..db import get_session
 from .. import models, schemas
 from ..models import Campaign, User
 from ..schemas import CampaignCreate, CampaignOut
+from ..deps import get_current_user
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
@@ -22,23 +23,10 @@ def _to_out(c: Campaign) -> CampaignOut:
 # ------------------------
 @router.get("", response_model=list[CampaignOut])
 async def list_campaigns(
-    request: Request,
-    x_user_id: str | None = Header(default=None),
-    x_admin: str | None = Header(default=None),
-    all: bool | None = None,
+    current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ):
-    if x_admin == "true" or all is True:
-        q = select(Campaign).order_by(Campaign.createdAt.desc())
-    else:
-        if not x_user_id:
-            return []
-        q = (
-            select(Campaign)
-            .where(Campaign.userId == x_user_id)
-            .order_by(Campaign.createdAt.desc())
-        )
-
+    q = select(Campaign).where(Campaign.userId == current_user["id"]).order_by(Campaign.createdAt.desc())
     rows = (await db.execute(q)).scalars().all()
     return [_to_out(c) for c in rows]
 
@@ -49,27 +37,10 @@ async def list_campaigns(
 @router.post("", response_model=CampaignOut)
 async def create_campaign(
     payload: CampaignCreate,
-    request: Request,
-    x_user_id: str | None = Header(default=None),
+    current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ):
-    if not x_user_id:
-        raise HTTPException(status_code=400, detail="Missing x-user-id header")
-
-    # 1) Asegura que exista el usuario
-    result = await db.execute(select(User).where(User.id == x_user_id))
-    user = result.scalar_one_or_none()
-
-    if not user:
-        user = User(
-            id=x_user_id,
-            email=f"{x_user_id}@example.com",
-            name=x_user_id,
-        )
-        db.add(user)
-        await db.flush()
-
-    # 2) Crea la campaña
+    # usuario viene del token; garantizado en /auth/login ya lo creamos si no existe
     campaign = Campaign(
         name=payload.name,
         query=payload.query,
@@ -78,15 +49,11 @@ async def create_campaign(
         lang=payload.lang,
         country=payload.country,
         city_keywords=payload.city_keywords,
-        userId=x_user_id,
+        userId=current_user["id"],
     )
     db.add(campaign)
     await db.commit()
     await db.refresh(campaign)
-
-    print(f"[CREATE CAMPAIGN] id={campaign.id} userId={campaign.userId} name={campaign.name}")
-
-
     return _to_out(campaign)
 
 

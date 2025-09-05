@@ -6,6 +6,10 @@ from fastapi.responses import RedirectResponse
 from fastapi.routing import APIRoute
 from sqlalchemy import text
 from .routers import campaigns
+from .routers import auth 
+
+# ... abajo con los otros include_router:
+app.include_router(auth.router)
 
 # Importa Base y engine para crear tablas en startup
 from .models import Base
