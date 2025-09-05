@@ -36,15 +36,15 @@ app = FastAPI(
 
 
 # ---- CORS ----
-origins = []
+origins = [“https://app.blackboxmonitor.com”]
 raw_origins = os.getenv("ALLOWED_ORIGINS", "")
 if raw_origins:
     origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins or ["https://legendary-youtiao-0e1307.netlify.app/"],  # En prod: especifica dominios permitidos
-    allow_credentials=False,
+    allow_origins=origins,  # En prod: especifica dominios permitidos
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -71,6 +71,8 @@ app.include_router(ingest.router, tags=["ingest"])
 app.include_router(analyses.router, tags=["analyses"])
 app.include_router(news.router, tags=["news"])
 app.include_router(ai_analysis.router, tags=["ai"])
+app.include_router(auth.router, prefix="/auth", tags=["auth"])
+app.include_router(campaigns.router, prefix="/campaigns", tags=["campaigns"])
 
 
 # ---- Startup: crea tablas e índices si no existen ----
