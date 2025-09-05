@@ -40,7 +40,7 @@ if raw_origins:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins or ["https://legendary-youtiao-0e1307.netlify.app/"],  # En prod: especifica dominios permitidos
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
