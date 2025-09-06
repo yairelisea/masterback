@@ -23,19 +23,15 @@ async def render_pdf(payload: Dict[str, Any]):
     """
     Espera JSON:
     {
-      "campaign": {...},
-      "analysis": {...}
+      "html": "..."
     }
-    Genera un PDF en backend y lo devuelve como archivo.
+    Genera un PDF en backend a partir del HTML proporcionado y lo devuelve como archivo.
     """
     try:
-        campaign = payload.get("campaign") or {}
-        analysis = payload.get("analysis") or {}
-        html = build_report_html(campaign, analysis)
+        html = payload.get("html") or ""
         pdf = await html_to_pdf_bytes(html)
 
-        name = (campaign.get("name") or "campana").replace(" ", "_")
-        filename = f"Reporte_{name}.pdf"
+        filename = "Reporte.pdf"
         return StreamingResponse(
             io.BytesIO(pdf),
             media_type="application/pdf",
