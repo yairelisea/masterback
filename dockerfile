@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt ./
 RUN pip install --upgrade pip setuptools wheel && \
     pip install -r requirements.txt
+    
 
 # Copiar el código de la app
 COPY . .
@@ -26,3 +27,16 @@ EXPOSE 8000
 
 # Comando de arranque (Render inyecta $PORT; local usará 8000)
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+
+
+# Instala deps del proyecto
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+# Instalar Chromium para Playwright (con dependencias del SO)
+RUN python -m playwright install --with-deps chromium
+
+# Copia el código
+COPY . /app
+
+# ... el CMD/ENTRYPOINT que ya tienes ...
