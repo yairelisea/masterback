@@ -1,179 +1,195 @@
-# app/routers/ai_analysis.py
-from fastapi import APIRouter, Query, Depends, HTTPException
-from pydantic import BaseModel
-from typing import List, Optional, Any, Dict
-import httpx, urllib.parse, time, datetime, hashlib, uuid
-import feedparser
+from __future__ import annotations
 
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from ..db import get_session
-from .. import models
-from ..services.llm import analyze_snippet, aggregate_perspective
+from fastapi import APIRouter, Query, Header, HTTPException, Depends, Request
+from typing import Any, Dict, List, Optional
+import urllib.parse
+import datetime as dt
+import httpx
+import xml.etree.ElementTree as ET
+
+# Opcional: si quieres validar userId con auth usa tu get_session/get_current_user
+# from ..deps import get_current_user
+
+from ..services.llm import analyze_snippet  # nuestro wrapper de OpenAI
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
-# --------- Schemas de respuesta ----------
-class AnalyzedItem(BaseModel):
-    title: str
-    link: str
-    source: Optional[str] = None
-    published_at: Optional[datetime.datetime] = None
-    llm: Dict[str, Any]
+# ---------------------------
+# Util: Google News RSS fetch
+# ---------------------------
+async def fetch_google_news(
+    q: str,
+    size: int = 25,
+    days_back: int = 14,
+    lang: str = "es-419",
+    country: str = "MX",
+) -> List[Dict[str, Any]]:
+    """
+    Consulta Google News RSS sin librerías externas.
+    Retorna una lista de items: {title, link, pubDate, source}.
+    """
+    # Google News RSS builder
+    # Documentado informalmente: https://news.google.com/rss/search?q=<query>&hl=<lang>&gl=<country>&ceid=<country>:<lang>
+    encoded_q = urllib.parse.quote_plus(q)
+    base = "https://news.google.com/rss/search"
+    params = f"?q={encoded_q}&hl={lang}&gl={country}&ceid={country}:{lang}"
+    url = base + params
 
-class AggregateView(BaseModel):
-    overall_sentiment: float
-    stance_distribution: Dict[str, int]
-    top_topics: List[str]
-    key_takeaways: List[str]
-    perception_overview: str
+    items: List[Dict[str, Any]] = []
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(url)
+        r.raise_for_status()
+        xml = r.text
 
-class AnalyzeResponse(BaseModel):
-    query: str
-    total: int
-    items: List[AnalyzedItem]
-    aggregate: Optional[AggregateView] = None
+    # Parse XML
+    root = ET.fromstring(xml)
+    # Los <item> están bajo channel
+    for item in root.findall("./channel/item"):
+        title = item.findtext("title") or ""
+        link = item.findtext("link") or ""
+        pubDate = item.findtext("pubDate") or ""
+        source = ""
+        source_tag = item.find("{http://search.yahoo.com/mrss/}source")
+        # A veces también viene como <source> sin namespace
+        if source_tag is None:
+            s2 = item.find("source")
+            if s2 is not None and s2.text:
+                source = s2.text.strip()
+        else:
+            if source_tag.text:
+                source = source_tag.text.strip()
 
-# --------- Helpers RSS ----------
-def build_google_news_rss(query: str, lang: str = "es-419", country: str = "MX") -> str:
-    q = f"\"{query}\""
-    params = {"q": q, "hl": lang, "gl": country, "ceid": f"{country}:{lang}"}
-    return "https://news.google.com/rss/search?" + urllib.parse.urlencode(params)
+        items.append(
+            {
+                "title": title,
+                "link": link,
+                "pubDate": pubDate,
+                "source": source,
+            }
+        )
 
-def _to_dt(struct_time) -> Optional[datetime.datetime]:
-    try:
-        if struct_time:
-            return datetime.datetime.fromtimestamp(time.mktime(struct_time), tz=datetime.timezone.utc)
-    except Exception:
-        return None
-    return None
+    # Filtro por days_back (si hay pubDate)
+    if days_back and days_back > 0:
+        cutoff = dt.datetime.utcnow() - dt.timedelta(days=days_back)
+        filtered = []
+        for it in items:
+            try:
+                # pubDate formato RFC822, ejemplo: Wed, 03 Sep 2025 19:15:00 GMT
+                parsed = dt.datetime.strptime(it["pubDate"], "%a, %d %b %Y %H:%M:%S %Z")
+            except Exception:
+                # si no podemos parsear, lo dejamos pasar
+                parsed = None
+            if parsed is None or parsed >= cutoff:
+                filtered.append(it)
+        items = filtered
 
-def clean_link(url: str) -> str:
-    try:
-        parsed = urllib.parse.urlparse(url)
-        if parsed.netloc.endswith("news.google.com"):
-            qs = urllib.parse.parse_qs(parsed.query)
-            if "url" in qs and qs["url"]:
-                return qs["url"][0]
-    except Exception:
-        pass
-    return url
+    # recorta a size
+    return items[: max(1, min(size, 100))]  # limitamos 1..100
 
-# --------- Endpoint principal ----------
-@router.get("/analyze-news", response_model=AnalyzeResponse)
+
+# ---------------------------
+# Endpoint: /ai/analyze-news
+# ---------------------------
+@router.get("/analyze-news")
 async def analyze_news(
-    q: str = Query(..., min_length=2, description="Actor político o frase exacta"),
-    size: int = Query(35, ge=1, le=50),
-    days_back: int = Query(14, ge=1, le=90),
+    request: Request,
+    q: str = Query(..., description="Consulta (ej. nombre del actor político)"),
+    size: int = Query(25, ge=1, le=100),
+    days_back: int = Query(14, ge=1, le=60),
     lang: str = Query("es-419"),
     country: str = Query("MX"),
-    overall: bool = Query(False, description="Si true, agrega un resumen global"),
-    campaignId: Optional[str] = Query(None, description="Si lo envías, guarda los análisis ligados a la campaña"),
-    session: AsyncSession = Depends(get_session)
+    overall: bool = Query(True, description="Si true, devuelve resumen agregado"),
+    userId: Optional[str] = None,  # fallback si el proxy elimina headers
+    x_user_id: Optional[str] = Header(default=None),
 ):
-    # 1) obtener feed
-    rss_url = build_google_news_rss(q, lang=lang, country=country)
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(rss_url)
-        if resp.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Error Google News RSS ({resp.status_code})")
-    feed = feedparser.parse(resp.content)
-    if feed.bozo:
-        raise HTTPException(status_code=502, detail="No se pudo parsear el feed RSS")
+    """
+    1) Busca noticias en Google News RSS.
+    2) Llama a OpenAI para generar resúmenes y una percepción/sentimiento.
+    3) Devuelve: { overall: {...}, items: [...] }
+    """
+    # Permitir funcionar sin auth estricta (ajústalo si quieres exigir token)
+    effective_user = x_user_id or userId or "anonymous"
+    # print("AI analyze by user:", effective_user)
 
-    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days_back)
+    # 1) Buscar noticias
+    articles = await fetch_google_news(q=q, size=size, days_back=days_back, lang=lang, country=country)
 
-    # 2) filtrar/limitar
-    entries = []
-    for e in feed.entries:
-        dt = _to_dt(getattr(e, "published_parsed", None))
-        if dt and dt < cutoff:
-            continue
-        title = getattr(e, "title", "").strip()
-        link = clean_link(getattr(e, "link", "").strip())
-        summary = getattr(e, "summary", "") or ""
-        source = None
+    if not articles:
+        return {
+            "overall": {
+                "summary": "No se encontraron notas en el periodo solicitado.",
+                "sentiment_label": None,
+                "sentiment_score": None,
+                "topics": [],
+                "perception": {},
+            },
+            "items": [],
+            "meta": {"q": q, "size": size, "days_back": days_back, "lang": lang, "country": country},
+        }
+
+    # 2) Resumir cada nota + percepción rápida con LLM
+    summarized_items: List[Dict[str, Any]] = []
+    for art in articles:
+        title = art.get("title") or ""
+        link = art.get("link") or ""
+        # Armamos un prompt corto: título + url (no scrapeamos el cuerpo para evitar CORS/capchas)
+        # El LLM hará micro-resumen con lo disponible.
         try:
-            source = e.source.title  # type: ignore
-        except Exception:
-            pass
-        if title and link:
-            entries.append((title, summary, link, source, dt))
-        if len(entries) >= size:
-            break
+            analysis = await analyze_snippet(
+                title=title.strip(),
+                summary=f"Enlace: {link}",
+                actor=q,
+            )
+            summarized_items.append(
+                {
+                    "title": title,
+                    "url": link,
+                    "pubDate": art.get("pubDate"),
+                    "source": art.get("source"),
+                    "llm": analysis,  # {summary, sentiment_label, sentiment_score, topics, stance, perception}
+                }
+            )
+        except Exception as e:
+            # Si falla alguna, seguimos con las demás
+            summarized_items.append(
+                {
+                    "title": title,
+                    "url": link,
+                    "pubDate": art.get("pubDate"),
+                    "source": art.get("source"),
+                    "llm_error": str(e),
+                }
+            )
 
-    # 3) LLM por item
-    analyzed: List[AnalyzedItem] = []
-    for title, summary, link, source, dt in entries:
-        llm_json = analyze_snippet(title=title, summary=summary, actor=q)
-        analyzed.append(AnalyzedItem(
-            title=title, link=link, source=source, published_at=dt, llm=llm_json
-        ))
+    # 3) Resumen agregado (overall)
+    overall_block: Dict[str, Any] = {}
+    if overall:
+        # Creamos un texto corto con títulos para que LLM haga resumen global
+        joined = "\n".join(f"- {it['title']}" for it in summarized_items if it.get("title"))
+        try:
+            agg = await analyze_snippet(
+                title=f"Resumen global de cobertura sobre: {q}",
+                summary=f"Titulares recientes:\n{joined}",
+                actor=q,
+            )
+            overall_block = {
+                "summary": agg.get("summary"),
+                "sentiment_label": agg.get("sentiment_label"),
+                "sentiment_score": agg.get("sentiment_score"),
+                "topics": agg.get("topics") or [],
+                "perception": agg.get("perception") or {},
+            }
+        except Exception as e:
+            overall_block = {
+                "summary": f"No fue posible generar el resumen agregado: {e}",
+                "sentiment_label": None,
+                "sentiment_score": None,
+                "topics": [],
+                "perception": {},
+            }
 
-    # 4) Agregado global (opcional)
-    agg_payload = None
-    if overall and analyzed:
-        # Convertimos a dicts sencillos para el agregador
-        simple = []
-        for it in analyzed:
-            simple.append({
-                "title": it.title,
-                "source": it.source,
-                "published_at": it.published_at.isoformat() if it.published_at else None,
-                "llm": it.llm
-            })
-        agg = aggregate_perspective(actor=q, analyzed_items=simple)
-        agg_payload = AggregateView(**agg)
-
-    # 5) Guardar en BD (opcional)
-    if campaignId and analyzed:
-        cres = await session.execute(select(models.Campaign).where(models.Campaign.id == campaignId))
-        campaign = cres.scalar_one_or_none()
-        if not campaign:
-            raise HTTPException(status_code=404, detail="campaignId no existe")
-
-        saved = 0
-        for item in analyzed:
-            h = hashlib.sha256(item.link.encode()).hexdigest()
-
-            # upsert IngestedItem
-            exists = await session.execute(select(models.IngestedItem).where(models.IngestedItem.hash == h))
-            ing = exists.scalar_one_or_none()
-            if not ing:
-                ing = models.IngestedItem(
-                    id=str(uuid.uuid4()),
-                    campaignId=campaignId,
-                    sourceType=models.SourceType.NEWS,
-                    sourceUrl=item.link,
-                    contentUrl=item.link,
-                    author=None,
-                    title=item.title,
-                    excerpt=None,
-                    publishedAt=item.published_at,
-                    status=models.ItemStatus.PROCESSED,
-                    hash=h
-                )
-                session.add(ing)
-                await session.flush()
-
-            # upsert Analysis (asumiendo columna JSON en models.Analysis.result)
-            found = await session.execute(select(models.Analysis).where(models.Analysis.itemId == ing.id))
-            ana = found.scalar_one_or_none()
-            if ana:
-                ana.result = item.llm
-                ana.model = "gpt-5-mini"
-                ana.analysisType = "news_sentiment"
-            else:
-                session.add(models.Analysis(
-                    id=str(uuid.uuid4()),
-                    itemId=ing.id,
-                    result=item.llm,
-                    model="gpt-5-mini",
-                    analysisType="news_sentiment"
-                ))
-            saved += 1
-
-        if saved:
-            await session.commit()
-
-    return AnalyzeResponse(query=q, total=len(analyzed), items=analyzed, aggregate=agg_payload)
+    return {
+        "overall": overall_block,
+        "items": summarized_items,
+        "meta": {"q": q, "size": size, "days_back": days_back, "lang": lang, "country": country},
+    }
