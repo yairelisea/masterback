@@ -3,34 +3,24 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from typing import Any, Dict, Optional
-from playwright.async_api import async_playwright
+from app.services.report import generate_report_pdf
 import io
 
 router = APIRouter(prefix="/ai", tags=["ai"])
-
-async def html_to_pdf_bytes(html: str) -> bytes:
-    async with async_playwright() as p:
-        browser = await p.chromium.launch()
-        page = await browser.new_page()
-        await page.set_content(html, wait_until="load")
-        pdf_bytes = await page.pdf(format="A4", margin={"top":"16mm","right":"14mm","bottom":"16mm","left":"14mm"})
-        await browser.close()
-        return pdf_bytes
 
 @router.get("/report")
 async def get_report(
     q: Optional[str] = Query(None, description="Query string for report"),
     size: Optional[str] = Query("A4", description="Paper size for PDF"),
-    # Additional query params can be added here as needed
+    days_back: Optional[int] = Query(7, description="Number of days back for data"),
+    lang: Optional[str] = Query("en", description="Language code"),
+    country: Optional[str] = Query("US", description="Country code"),
 ):
     """
-    Generates a simple PDF report based on query parameters.
-    Currently returns a placeholder PDF until integrated with analysis data.
+    Generates a PDF report based on query parameters using generate_report_pdf.
     """
     try:
-        # Placeholder HTML content for the PDF
-        html = f"<html><body><h1>Report</h1><p>Query: {q or 'N/A'}</p><p>Size: {size}</p></body></html>"
-        pdf = await html_to_pdf_bytes(html)
+        pdf = await generate_report_pdf(q=q, size=size, days_back=days_back, lang=lang, country=country)
 
         filename = "Report.pdf"
         return StreamingResponse(
@@ -46,15 +36,24 @@ async def get_report(
 @router.post("/report")
 async def post_report(payload: Dict[str, Any]):
     """
-    Expects JSON:
+    Expects JSON with parameters:
     {
-      "html": "..."
+      "q": "...",
+      "size": "...",
+      "days_back": ...,
+      "lang": "...",
+      "country": "..."
     }
-    Generates a PDF from the provided HTML and returns it as a file.
+    Generates a PDF report using generate_report_pdf.
     """
     try:
-        html = payload.get("html") or ""
-        pdf = await html_to_pdf_bytes(html)
+        q = payload.get("q")
+        size = payload.get("size", "A4")
+        days_back = payload.get("days_back", 7)
+        lang = payload.get("lang", "en")
+        country = payload.get("country", "US")
+
+        pdf = await generate_report_pdf(q=q, size=size, days_back=days_back, lang=lang, country=country)
 
         filename = "Report.pdf"
         return StreamingResponse(
