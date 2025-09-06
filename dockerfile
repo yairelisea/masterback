@@ -1,42 +1,32 @@
-# Usamos Python 3.11 para evitar problemas de compatibilidad
+# Dockerfile (backend)
 FROM python:3.11-slim
 
-# No escribir .pyc y logs line-buffered
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Carpeta de trabajo
 WORKDIR /app
 
-# Paquetes mínimos para algunas wheels
+# Paquetes base útiles (build + certificados + algunas fuentes legibles en PDF)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential curl ca-certificates && \
-    rm -rf /var/lib/apt/lists/*
+    build-essential \
+    curl \
+    ca-certificates \
+    fonts-liberation \
+    fonts-noto-color-emoji \
+ && rm -rf /var/lib/apt/lists/*
 
-# Instalar deps
-COPY requirements.txt ./
-RUN pip install --upgrade pip setuptools wheel && \
-    pip install -r requirements.txt
-    
+# ---- Dependencias Python ----
+# (1) Copiamos SOLO requirements y los instalamos
+COPY requirements.txt ./requirements.txt
+RUN pip install --upgrade pip setuptools wheel \
+ && pip install --no-cache-dir -r requirements.txt
 
-# Copiar el código de la app
-COPY . .
-
-# Puerto interno
-EXPOSE 8000
-
-# Comando de arranque (Render inyecta $PORT; local usará 8000)
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
-
-
-# Instala deps del proyecto
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
-
-# Instalar Chromium para Playwright (con dependencias del SO)
+# (2) Instalar Chromium de Playwright (usa la versión instalada por pip)
+#     --with-deps trae todas las libs del SO necesarias
 RUN python -m playwright install --with-deps chromium
 
-# Copia el código
-COPY . /app
+# ---- Copia del proyecto ----
+COPY . .
 
-# ... el CMD/ENTRYPOINT que ya tienes ...
+EXPOSE 8000
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
