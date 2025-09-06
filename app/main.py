@@ -77,7 +77,7 @@ async def favicon_empty():
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 
 # Módulos del app
-app.include_router(campaigns.router, prefix="/campaigns", tags=["campaigns"])
+app.include_router(campaigns.router, tags=["campaigns"])
 app.include_router(sources.router, prefix="/sources", tags=["sources"])
 app.include_router(ingest.router, prefix="/ingest", tags=["ingest"])
 app.include_router(analyses.router, prefix="/analyses", tags=["analyses"])
