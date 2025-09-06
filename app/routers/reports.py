@@ -1,13 +1,12 @@
 # app/routers/reports.py
 from __future__ import annotations
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from typing import Any, Dict
-from ..services.report import build_report_html
+from typing import Any, Dict, Optional
 from playwright.async_api import async_playwright
 import io
 
-router = APIRouter(prefix="/reports", tags=["reports"])
+router = APIRouter(prefix="/ai", tags=["ai"])
 
 async def html_to_pdf_bytes(html: str) -> bytes:
     async with async_playwright() as p:
@@ -18,20 +17,46 @@ async def html_to_pdf_bytes(html: str) -> bytes:
         await browser.close()
         return pdf_bytes
 
-@router.post("/render-pdf")
-async def render_pdf(payload: Dict[str, Any]):
+@router.get("/report")
+async def get_report(
+    q: Optional[str] = Query(None, description="Query string for report"),
+    size: Optional[str] = Query("A4", description="Paper size for PDF"),
+    # Additional query params can be added here as needed
+):
     """
-    Espera JSON:
+    Generates a simple PDF report based on query parameters.
+    Currently returns a placeholder PDF until integrated with analysis data.
+    """
+    try:
+        # Placeholder HTML content for the PDF
+        html = f"<html><body><h1>Report</h1><p>Query: {q or 'N/A'}</p><p>Size: {size}</p></body></html>"
+        pdf = await html_to_pdf_bytes(html)
+
+        filename = "Report.pdf"
+        return StreamingResponse(
+            io.BytesIO(pdf),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"'
+            },
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
+
+@router.post("/report")
+async def post_report(payload: Dict[str, Any]):
+    """
+    Expects JSON:
     {
       "html": "..."
     }
-    Genera un PDF en backend a partir del HTML proporcionado y lo devuelve como archivo.
+    Generates a PDF from the provided HTML and returns it as a file.
     """
     try:
         html = payload.get("html") or ""
         pdf = await html_to_pdf_bytes(html)
 
-        filename = "Reporte.pdf"
+        filename = "Report.pdf"
         return StreamingResponse(
             io.BytesIO(pdf),
             media_type="application/pdf",
