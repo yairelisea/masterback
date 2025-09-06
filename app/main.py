@@ -82,7 +82,7 @@ app.include_router(sources.router, prefix="/sources", tags=["sources"])
 app.include_router(ingest.router, prefix="/ingest", tags=["ingest"])
 app.include_router(analyses.router, prefix="/analyses", tags=["analyses"])
 app.include_router(news.router, prefix="/news", tags=["news"])
-app.include_router(ai_analysis.router, prefix="/ai", tags=["ai"])
+app.include_router(ai_analysis.router, tags=["ai"])
 
 
 # ---------- Startup: crea tablas e índices si no existen ----------
