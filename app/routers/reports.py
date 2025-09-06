@@ -7,7 +7,7 @@ from app.services.report import generate_report_pdf
 import io
 import os
 
-router = APIRouter(prefix="/reports", tags=["reports"])
+router = APIRouter(tags=["reports"])
 
 @router.get("/pdf/{campaign_id}")
 async def get_report(campaign_id: str):
