@@ -1,39 +1,25 @@
 # app/routers/reports.py
 from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from typing import Any, Dict, Optional
 from app.services.report import generate_report_pdf
 import io
+import os
 
-router = APIRouter(prefix="/ai", tags=["ai"])
+router = APIRouter(prefix="/reports", tags=["reports"])
 
-@router.get("/report")
-async def get_report(
-    q: Optional[str] = Query(None, description="Query string for report"),
-    size: Optional[str] = Query("A4", description="Paper size for PDF"),
-    days_back: Optional[int] = Query(7, description="Number of days back for data"),
-    lang: Optional[str] = Query("en", description="Language code"),
-    country: Optional[str] = Query("US", description="Country code"),
-):
+@router.get("/pdf/{campaign_id}")
+async def get_report(campaign_id: str):
     """
-    Generates a PDF report based on query parameters using generate_report_pdf.
+    Serves a PDF report file from /tmp/{campaign_id}.pdf if it exists.
     """
-    try:
-        pdf = await generate_report_pdf(q=q, size=size, days_back=days_back, lang=lang, country=country)
+    file_path = f"/tmp/{campaign_id}.pdf"
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="Report not found")
+    return FileResponse(file_path, media_type="application/pdf", filename=f"{campaign_id}.pdf")
 
-        filename = "Report.pdf"
-        return StreamingResponse(
-            io.BytesIO(pdf),
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"'
-            },
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
-
-@router.post("/report")
+@router.post("/pdf")
 async def post_report(payload: Dict[str, Any]):
     """
     Expects JSON with parameters:
