@@ -1,31 +1,37 @@
+# Python 3.11 slim (Debian)
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app
 
-# Paquetes del SO necesarios (incluye fuentes correctas en Debian)
+# ---- Dependencias del SO necesarias para Playwright/Chromium y fuentes ----
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl build-essential \
-    # Fuentes y libs que Playwright necesita
-    fonts-unifont fonts-ubuntu fonts-liberation \
-    libnss3 libxss1 libatk-bridge2.0-0 libgtk-3-0 libdrm2 libxkbcommon0 \
-    libasound2 libxcomposite1 libxdamage1 libxrandr2 libgbm1 \
-    libpango-1.0-0 libcairo2 libatspi2.0-0 libxshmfence1 libx11-xcb1 \
-    libxcb-dri3-0 libxfixes3 libxrender1 libxi6 libxext6 libglib2.0-0 \
- && rm -rf /var/lib/apt/lists/*
+    ca-certificates curl \
+    # Fuentes (equivalentes válidas en Debian)
+    fonts-unifont fonts-dejavu-core fonts-liberation \
+    # Libs de runtime que exige Chromium/Playwright
+    libglib2.0-0 libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+    libdrm2 libdbus-1-3 libxdamage1 libxfixes3 libxcomposite1 libxrandr2 \
+    libgbm1 libxkbcommon0 libasound2 libxshmfence1 libx11-6 libx11-xcb1 \
+    libxcb1 libxext6 libpango-1.0-0 libcairo2 libatspi2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
 
-# Instala dependencias Python (incluye playwright en requirements.txt)
+# ---- Python deps ----
 COPY requirements.txt ./
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
- && pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install -r requirements.txt
 
-# Descarga Chromium para la versión instalada de Playwright
-RUN python -m playwright install chromium
+# ---- Instalar navegadores de Playwright ----
+# Ya instalaste las dependencias del SO arriba, así que basta con:
+RUN playwright install chromium
 
-# Copia el código
+# ---- Copia código ----
 COPY . .
 
+# ---- Exponer puerto y arrancar ----
 EXPOSE 8000
-CMD ["sh","-c","uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
