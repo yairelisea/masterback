@@ -6,6 +6,7 @@ from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.routing import APIRoute
+from .routers import reports
 
 # Base y engine (para crear tablas/índices en startup)
 from .models import Base
@@ -83,7 +84,7 @@ app.include_router(ingest.router, prefix="/ingest", tags=["ingest"])
 app.include_router(analyses.router, prefix="/analyses", tags=["analyses"])
 app.include_router(news.router, prefix="/news", tags=["news"])
 app.include_router(ai_analysis.router, tags=["ai"])
-
+app.include_router(reports.router, prefix="/reports", tags=["reports"])
 
 # ---------- Startup: crea tablas e índices si no existen ----------
 @app.on_event("startup")
