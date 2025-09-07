@@ -96,37 +96,53 @@ async def post_report(payload: Dict[str, Any], request: Request):
         except Exception:
             # si falla, continuamos con el fallback externo
             pass
-
-    # 2) Fallback a microservicio externo (recomendado para Render/Netlify)
+        
         # 2) Fallback a microservicio externo (recomendado para Render/Netlify)
     pdf_service = PDF_SERVICE_URL
     if not pdf_service:
         raise HTTPException(status_code=500, detail="WEASYPRINT_MISSING")
 
     try:
-        url = f"{pdf_service}/pdf"  # el micro expone POST /pdf
-        # follow_redirects=True por si Render hace 308/307 en frío
-        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+        url = f"{pdf_service}/pdf"  # tu microservicio expone POST /pdf
+        async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.post(
                 url,
                 json=payload,
                 headers={"Accept": "application/pdf"},
             )
 
-        # Si no es 2xx devolvemos el texto de error del micro (útil para debug)
-        if resp.status_code < 200 or resp.status_code >= 300:
+        # Si el microservicio falla, propaga el error (texto del body para depurar)
+        if resp.status_code >= 300:
             raise HTTPException(status_code=resp.status_code, detail=resp.text)
 
-        # Validar que realmente sea PDF
+        # Debe ser PDF
         ctype = (resp.headers.get("content-type") or "").lower()
-        pdf_bytes = resp.content
-        if "application/pdf" not in ctype or not isinstance(pdf_bytes, (bytes, bytearray)) or not pdf_bytes:
-            preview = ""
-            try:
-                preview = resp.text[:280]
-            except Exception:
-                pass
+        pdf_bytes = resp.content  # <<--- bytes crudos del PDF
+
+        # Validación estricta de PDF
+        if not pdf_bytes or not isinstance(pdf_bytes, (bytes, bytearray)):
+            raise HTTPException(status_code=500, detail="PDF service returned empty body")
+
+        # Magic bytes de PDF deben comenzar con %PDF-
+        if not pdf_bytes.startswith(b"%PDF-"):
+            # Intenta ver si el server devolvió HTML por error para dar pista
+            preview = pdf_bytes[:200].decode("utf-8", "ignore")
             raise HTTPException(status_code=500, detail=f"PDF service returned non-PDF: {preview}")
+
+        # Si el content-type no viene bien, no pasa nada: forzamos application/pdf
+        final_name = safe_filename(suggested_name)
+        return StreamingResponse(
+            io.BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{final_name}"',
+                "Access-Control-Expose-Headers": "Content-Disposition",
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"PDF proxy failed: {e}")
 
         # Intentar tomar filename del micro (Content-Disposition)
         disp = resp.headers.get("content-disposition") or ""
