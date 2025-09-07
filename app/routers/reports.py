@@ -7,72 +7,62 @@ from typing import Any, Dict
 import io
 import os
 
-# Usa SIEMPRE el mismo nombre que implementaste en services/report.py
-# Debe devolver bytes (contenido PDF)
+# Usa el generador que tengas disponible en services
+# (si tu servicio se llama diferente, ajusta el import)
 from app.services.report import generate_best_effort_report
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
+@router.get("/ping", tags=["reports"])
+async def reports_ping():
+    return {"ok": True, "scope": "reports"}
 
-@router.get("/pdf/{campaign_id}")
-async def get_report(campaign_id: str):
+@router.get("/pdf/{campaign_id}", tags=["reports"])
+async def get_report_file(campaign_id: str):
     """
-    Descarga un PDF ya generado previamente y guardado en /tmp/<campaign_id>.pdf
-    (opcional, sólo si decides persistir archivos en disco).
+    Opción B (por si guardaste PDFs en /tmp), devuelve un PDF por ID si existe.
     """
     file_path = f"/tmp/{campaign_id}.pdf"
     if not os.path.isfile(file_path):
         raise HTTPException(status_code=404, detail="Report not found")
-    return FileResponse(
-        file_path,
-        media_type="application/pdf",
-        filename=f"{campaign_id}.pdf",
-    )
+    return FileResponse(file_path, media_type="application/pdf", filename=f"{campaign_id}.pdf")
 
-
-@router.post("/pdf")
-async def post_report(payload: Dict[str, Any]):
+@router.post("/pdf", tags=["reports"])
+async def create_report_pdf(payload: Dict[str, Any]):
     """
-    Recibe directamente los datos ya analizados y genera un PDF al vuelo.
-    No recalcula análisis.
-
-    Espera:
+    Espera JSON:
     {
-      "campaign": { "name": "...", "query": "...", ... },
+      "campaign": { "name": "...", "query": "..." },
       "analysis": {
         "summary": "...",
         "sentiment_label": "...",
         "sentiment_score": 0.23,
-        "sentiment_score_pct": 61,   # opcional
-        "topics": [...],
+        "sentiment_score_pct": 61,          # opcional
+        "topics": ["..."],
         "items": [
-          {
-            "title": "...",
-            "url": "...",
-            "source": "...",
-            "llm": {
-              "summary": "...",
-              "sentiment_label": "...",
-              "sentiment_score": 0.12,
-              "sentiment_score_pct": 56
-            }
-          },
-          ...
+           {
+             "title": "...",
+             "url": "https://...",
+             "source": "...",
+             "llm": {
+               "summary": "...",
+               "sentiment_label": "...",
+               "sentiment_score": 0.1,
+               "sentiment_score_pct": 55     # opcional
+             }
+           },
+           ...
         ]
       }
     }
     """
     try:
-        if not isinstance(payload, dict):
-            raise HTTPException(status_code=400, detail="JSON inválido")
-
         campaign = payload.get("campaign") or {}
         analysis = payload.get("analysis") or {}
-
         if not analysis:
-            raise HTTPException(status_code=400, detail="El campo 'analysis' es requerido")
+            raise HTTPException(status_code=400, detail="analysis es requerido")
 
-        # Genera bytes PDF (services/report.py debe retornarlos)
+        # Genera el PDF en memoria (bytes)
         pdf_bytes: bytes = generate_best_effort_report(campaign=campaign, analysis=analysis)
 
         filename = (campaign.get("name") or campaign.get("query") or "Reporte") + ".pdf"
