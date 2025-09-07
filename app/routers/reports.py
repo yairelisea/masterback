@@ -75,29 +75,34 @@ async def post_report(payload: Dict[str, Any], request: Request):
         suggested_name = "Reporte"
     filename = f"{suggested_name}.pdf"
 
+
     # 1) Intento con servicio interno (si está disponible y operativo)
-    if callable(generate_best_effort_report):
-        try:
-            # Genera el PDF en memoria (bytes)
-            # Si tu generador se llama distinto, cámbialo aquí:
-            pdf_bytes = generate_best_effort_report(campaign=campaign, analysis=analysis)
+if callable(generate_best_effort_report):
+    try:
+        # Puede ser sync o async y puede devolver bytes o (bytes, filename)
+        result = await _maybe_async(
+            generate_best_effort_report,
+            campaign=campaign,
+            analysis=analysis,
+        )
 
-            filename = safe_filename(campaign.get("name") or campaign.get("query") or "Reporte")
+        default_name = (campaign.get("name") or campaign.get("query") or "Reporte")
+        default_name = f"{safe_filename(default_name)}.pdf"
 
-            return StreamingResponse(
-                io.BytesIO(pdf_bytes),
-                media_type="application/pdf",
-                headers={
-                    # Dispara descarga directa
-                    "Content-Disposition": f'attachment; filename="{filename}"',
-                    # Permite al frontend leer Content-Disposition vía CORS
-                    "Access-Control-Expose-Headers": "Content-Disposition",
-                },
-            )
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
+        pdf_bytes, final_name = _normalize_pdf_result(result, default_name)
+
+        return StreamingResponse(
+            io.BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{final_name}"',
+                "Access-Control-Expose-Headers": "Content-Disposition",
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
 
     # 2) Fallback a microservicio externo (recomendado para Render/Netlify)
     pdf_service = os.getenv("PDF_SERVICE_URL", "").rstrip("/")
