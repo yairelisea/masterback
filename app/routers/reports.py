@@ -75,34 +75,34 @@ async def post_report(payload: Dict[str, Any], request: Request):
         suggested_name = "Reporte"
     filename = f"{suggested_name}.pdf"
 
-
     # 1) Intento con servicio interno (si está disponible y operativo)
-if callable(generate_best_effort_report):
-    try:
-        # Puede ser sync o async y puede devolver bytes o (bytes, filename)
-        result = await _maybe_async(
-            generate_best_effort_report,
-            campaign=campaign,
-            analysis=analysis,
-        )
+    if callable(generate_best_effort_report):
+        try:
+            # Puede ser sync o async y puede devolver bytes o (bytes, filename)
+            result = await _maybe_async(
+                generate_best_effort_report,
+                campaign=campaign,
+                analysis=analysis,
+            )
 
-        default_name = (campaign.get("name") or campaign.get("query") or "Reporte")
-        default_name = f"{safe_filename(default_name)}.pdf"
+            default_name = (campaign.get("name") or campaign.get("query") or "Reporte")
+            default_name = safe_filename(default_name)
 
-        pdf_bytes, final_name = _normalize_pdf_result(result, default_name)
+            pdf_bytes, final_name = _normalize_pdf_result(result, default_name)
 
-        return StreamingResponse(
-            io.BytesIO(pdf_bytes),
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": f'attachment; filename="{final_name}"',
-                "Access-Control-Expose-Headers": "Content-Disposition",
-            },
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
+            return StreamingResponse(
+                io.BytesIO(pdf_bytes),
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{final_name}"',
+                    "Access-Control-Expose-Headers": "Content-Disposition",
+                },
+            )
+        except HTTPException:
+            raise
+        except Exception:
+            # si falla, continuamos con el fallback externo
+            pass
 
     # 2) Fallback a microservicio externo (recomendado para Render/Netlify)
     pdf_service = os.getenv("PDF_SERVICE_URL", "").rstrip("/")
@@ -110,79 +110,53 @@ if callable(generate_best_effort_report):
         # No hay weasyprint/playwright interno ni microservicio configurado
         raise HTTPException(status_code=500, detail="WEASYPRINT_MISSING")
 
-    # Probamos /render y luego /pdf
-    for path in ("/render", "/pdf"):
+    # Intentamos rutas comunes del microservicio
+    for path in ("/render", "/pdf", ""):
         try:
             url = f"{pdf_service}{path}"
             async with httpx.AsyncClient(timeout=60) as client:
                 # Envía tal cual el payload del front
                 resp = await client.post(url, json=payload)
+
             if resp.status_code == 404:
                 # intenta siguiente path
                 continue
             if resp.status_code >= 300:
                 # devolvemos el error del microservicio
-                raise HTTPException(status_code=resp.status_code, detail=resp.text)
-
-            pdf_bytes = resp.content
-            if not isinstance(pdf_bytes, (bytes, bytearray)) or len(pdf_bytes) == 0:
-                raise HTTPException(status_code=500, detail="Servicio PDF devolvió respuesta vacía")
-
-            return StreamingResponse(
-                io.BytesIO(pdf_bytes),
-                media_type="application/pdf",
-                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-            )
-        except HTTPException:
-            raise
-        except Exception as e:
-            # intenta el siguiente path o al final cae en error genérico
-            last_error = str(e)
-            continue
-
-    try:
-        timeout = httpx.Timeout(60.0, connect=20.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            # IMPORTANTE: usamos stream para no cargar todo en memoria si no quieres
-            resp = await client.post(PDF_SERVICE_URL, json=payload)
-            # Si hay error, intenta devolver el cuerpo de error legible
-            if resp.status_code >= 400:
-                # Intenta texto para ver el mensaje del microservicio
-                err_txt = None
+                # intentamos mostrar texto legible si existe
                 try:
                     err_txt = resp.text
                 except Exception:
                     err_txt = f"status={resp.status_code}"
-                raise HTTPException(status_code=500, detail=f"PDF service error: {err_txt}")
+                raise HTTPException(status_code=resp.status_code, detail=err_txt)
 
-            # Verifica content-type del microservicio
+            # Validar que realmente sea PDF
             ctype = resp.headers.get("content-type", "")
-            if "application/pdf" not in ctype.lower():
-                # Algo fue mal: probablemente devolvió HTML/JSON de error
-                err_preview = (resp.text[:300] if hasattr(resp, "text") else "unknown")
-                raise HTTPException(status_code=500, detail=f"PDF service returned non-PDF: {err_preview}")
+            pdf_bytes = resp.content
+            if "application/pdf" not in ctype.lower() or not isinstance(pdf_bytes, (bytes, bytearray)) or len(pdf_bytes) == 0:
+                preview = ""
+                try:
+                    preview = resp.text[:280]
+                except Exception:
+                    pass
+                raise HTTPException(status_code=500, detail=f"PDF service returned non-PDF: {preview}")
 
-            # Opción A: leer bytes y responder
-            pdf_bytes = resp.content  # <- bytes reales del PDF
-            filename = "reporte.pdf"
+            final_name = safe_filename(suggested_name)
             return Response(
                 content=pdf_bytes,
                 media_type="application/pdf",
-                headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+                headers={
+                    "Content-Disposition": f'attachment; filename="{final_name}"',
+                    "Access-Control-Expose-Headers": "Content-Disposition",
+                },
             )
+        except HTTPException:
+            raise
+        except Exception:
+            # intenta el siguiente path
+            continue
 
-            # Opción B (streaming):
-            # return StreamingResponse(
-            #     resp.aiter_bytes(),
-            #     media_type="application/pdf",
-            #     headers={"Content-Disposition": f'attachment; filename="{filename}"'}
-            # )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
-
+    # Si llegamos aquí, no fue posible generar el PDF
     raise HTTPException(status_code=502, detail="No fue posible generar el PDF (servicio externo no disponible).")
 
 
