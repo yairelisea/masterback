@@ -99,7 +99,7 @@ async def post_report(payload: Dict[str, Any], request: Request):
             # si falla, continuamos con el fallback externo
             pass
 
-    # 2) Fallback a microservicio externo (recomendado para Render/Netlify)
+
        # 2) Fallback a microservicio externo (recomendado para Render/Netlify)
     pdf_service = PDF_SERVICE_URL
     if not pdf_service:
