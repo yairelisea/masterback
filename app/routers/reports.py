@@ -120,6 +120,49 @@ async def post_report(payload: Dict[str, Any], request: Request):
             last_error = str(e)
             continue
 
+    try:
+        timeout = httpx.Timeout(60.0, connect=20.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            # IMPORTANTE: usamos stream para no cargar todo en memoria si no quieres
+            resp = await client.post(PDF_SERVICE_URL, json=payload)
+            # Si hay error, intenta devolver el cuerpo de error legible
+            if resp.status_code >= 400:
+                # Intenta texto para ver el mensaje del microservicio
+                err_txt = None
+                try:
+                    err_txt = resp.text
+                except Exception:
+                    err_txt = f"status={resp.status_code}"
+                raise HTTPException(status_code=500, detail=f"PDF service error: {err_txt}")
+
+            # Verifica content-type del microservicio
+            ctype = resp.headers.get("content-type", "")
+            if "application/pdf" not in ctype.lower():
+                # Algo fue mal: probablemente devolvió HTML/JSON de error
+                err_preview = (resp.text[:300] if hasattr(resp, "text") else "unknown")
+                raise HTTPException(status_code=500, detail=f"PDF service returned non-PDF: {err_preview}")
+
+            # Opción A: leer bytes y responder
+            pdf_bytes = resp.content  # <- bytes reales del PDF
+            filename = "reporte.pdf"
+            return Response(
+                content=pdf_bytes,
+                media_type="application/pdf",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+            )
+
+            # Opción B (streaming):
+            # return StreamingResponse(
+            #     resp.aiter_bytes(),
+            #     media_type="application/pdf",
+            #     headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+            # )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
+
     raise HTTPException(status_code=502, detail="No fue posible generar el PDF (servicio externo no disponible).")
 
 
