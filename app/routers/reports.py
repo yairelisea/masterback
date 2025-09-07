@@ -1,3 +1,4 @@
+# app/routers/reports.py
 from __future__ import annotations
 
 import io
@@ -5,7 +6,7 @@ import os
 from typing import Any, Dict, Optional, Tuple, Union
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse, Response
 import httpx
 
 # Intentamos usar el servicio interno si existe
@@ -15,11 +16,9 @@ try:
 except Exception:
     generate_best_effort_report = None  # fallback a microservicio externo
 
-
 router = APIRouter(prefix="/reports", tags=["reports"])
 
 # URL del microservicio externo de PDF (usado en el fallback inferior).
-# Mantener en MAYÚSCULAS para coincidir con referencias existentes.
 PDF_SERVICE_URL = os.getenv("PDF_SERVICE_URL", "").rstrip("/")
 
 # --------------------------------------------------------------------
@@ -33,7 +32,7 @@ async def get_report(campaign_id: str):
     return FileResponse(
         file_path,
         media_type="application/pdf",
-        filename=f"{safe_filename(campaign_id)}",
+        filename=safe_filename(campaign_id),
     )
 
 # --------------------------------------------------------------------
@@ -99,68 +98,65 @@ async def post_report(payload: Dict[str, Any], request: Request):
             pass
 
     # 2) Fallback a microservicio externo (recomendado para Render/Netlify)
-   # 2) Fallback a microservicio externo (recomendado para Render/Netlify)
-pdf_service = os.getenv("PDF_SERVICE_URL", "").rstrip("/")
-if not pdf_service:
-    raise HTTPException(status_code=500, detail="WEASYPRINT_MISSING")
+    pdf_service = PDF_SERVICE_URL
+    if not pdf_service:
+        raise HTTPException(status_code=500, detail="WEASYPRINT_MISSING")
 
-try:
-    url = f"{pdf_service}/pdf"  # ← ruta correcta del microservicio
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(
-            url,
-            json=payload,
-            headers={"Accept": "application/pdf"}  # ← pedimos PDF explícitamente
+    try:
+        # Tu microservicio expone POST /pdf
+        url = f"{pdf_service}/pdf"
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                url,
+                json=payload,
+                headers={"Accept": "application/pdf"},
+            )
+
+        if resp.status_code >= 300:
+            # devolvemos el error textual del microservicio si lo hay
+            raise HTTPException(status_code=resp.status_code, detail=resp.text)
+
+        ctype = (resp.headers.get("content-type") or "").lower()
+        pdf_bytes = resp.content
+
+        if "application/pdf" not in ctype or not isinstance(pdf_bytes, (bytes, bytearray)) or not pdf_bytes:
+            preview = ""
+            try:
+                preview = resp.text[:280]
+            except Exception:
+                pass
+            raise HTTPException(status_code=500, detail=f"PDF service returned non-PDF: {preview}")
+
+        final_name = safe_filename(suggested_name)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{final_name}"',
+                "Access-Control-Expose-Headers": "Content-Disposition",
+            },
         )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"PDF proxy failed: {e}")
 
-    if resp.status_code >= 300:
-        # devolvemos el error textual del microservicio si lo hay
-        raise HTTPException(status_code=resp.status_code, detail=resp.text)
-
-    ctype = (resp.headers.get("content-type") or "").lower()
-    pdf_bytes = resp.content
-
-    if "application/pdf" not in ctype or not isinstance(pdf_bytes, (bytes, bytearray)) or not pdf_bytes:
-        preview = ""
-        try:
-            preview = resp.text[:280]
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail=f"PDF service returned non-PDF: {preview}")
-
-    final_name = safe_filename(suggested_name)
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f'attachment; filename="{final_name}"',
-            "Access-Control-Expose-Headers": "Content-Disposition",
-        },
-    )
-except HTTPException:
-    raise
-except Exception as e:
-    raise HTTPException(status_code=502, detail=f"PDF proxy failed: {e}")
-
-
+# ---------------------
+# Utilidades
+# ---------------------
 def safe_filename(name: Optional[str]) -> str:
     """
     Convierte un texto en un nombre de archivo seguro para cabeceras HTTP.
     Reemplaza espacios por guiones bajos y elimina caracteres problemáticos.
     """
     base = (name or "Reporte").strip()
-    # Sustituir espacios por underscore
-    base = base.replace(" ", "_")
-    # Filtrar caracteres inseguros
+    base = base.replace(" ", "_")  # espacios -> underscore (evita problemas en descargas)
     allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
     base = "".join(ch for ch in base if ch in allowed)
     if not base.lower().endswith(".pdf"):
         base += ".pdf"
     return base
 
-# ---------------------
-# Utilidades internas
-# ---------------------
 def _normalize_pdf_result(
     result: Union[bytes, bytearray, Tuple[Union[bytes, bytearray], Optional[str]]],
     fallback_name: str,
@@ -183,7 +179,6 @@ def _normalize_pdf_result(
         return bytes(data), final_name
 
     raise TypeError("PDF generator must return bytes or (bytes, filename)")
-
 
 async def _maybe_async(fn, *args, **kwargs):
     """Permite llamar funciones sync o async con la misma interfaz."""
