@@ -1,16 +1,27 @@
 # app/services/report.py
 from __future__ import annotations
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 from jinja2 import Environment, BaseLoader
-from weasyprint import HTML  # si no tienes weasyprint operativo, te indico abajo un fallback
+import datetime as dt
+
+# -------------------------------------------------------------------
+# Helpers
+# -------------------------------------------------------------------
 
 def _pct(score: Optional[float], pct: Optional[float]) -> Optional[int]:
+    """Normaliza puntaje de sentimiento a 0..100.
+    - Si ya viene porcentaje (0..100), lo redondea.
+    - Si viene score -1..1, lo transforma a 0..100.
+    """
     if isinstance(pct, (int, float)):
-        return round(pct)
+        try:
+            return max(0, min(100, round(pct)))
+        except Exception:
+            return round(pct)  # best effort
     if isinstance(score, (int, float)):
-        # -1..1 -> 0..100
-        return round(((score + 1) / 2) * 100)
+        return max(0, min(100, round(((score + 1) / 2) * 100)))
     return None
+
 
 HTML_TEMPLATE = """
 <!doctype html>
@@ -82,11 +93,14 @@ HTML_TEMPLATE = """
         <div class="item">
           <div class="item-title">{{ it.title or it.headline or ("Nota " ~ loop.index) }}</div>
           <div class="item-meta">
-            {% set it_label = it.llm.sentiment_label if it.llm else None %}
-            {% set it_pct = _pct(it.llm.sentiment_score if it.llm else None, it.llm.sentiment_score_pct if it.llm else None) %}
+            {% set it_label = it.llm.sentiment_label if it.llm else (it.sentiment_label if it.sentiment_label is defined else None) %}
+            {% set it_pct = _pct(
+                (it.llm.sentiment_score if it.llm else (it.sentiment_score if it.sentiment_score is defined else None)),
+                (it.llm.sentiment_score_pct if it.llm else (it.sentiment_percent if it.sentiment_percent is defined else None))
+            ) %}
             {% if it_label %}<span class="tag">{{ it_label }}</span>{% endif %}
             {% if it_pct is not none %}<span class="tag pct">{{ it_pct }}%</span>{% endif %}
-            {% if it.source %}<span class="source">{{ it.source }}</span>{% endif %}
+            {% if it.source %}<span class="source">{{ it.source if it.source is string else (it.source.name if it.source.name is defined else "") }}</span>{% endif %}
             {% if it.url or it.link %}
               <a class="url" href="{{ it.url or it.link }}" target="_blank" rel="noreferrer">Abrir</a>
             {% endif %}
@@ -105,22 +119,66 @@ HTML_TEMPLATE = """
 </html>
 """
 
-def generate_pdf_from_analysis(*, campaign: Dict[str, Any], analysis: Dict[str, Any]) -> bytes:
-    """Renderiza HTML con Jinja2 y lo convierte a PDF con WeasyPrint (sin llamadas externas)."""
+# -------------------------------------------------------------------
+# Renderizado a HTML (siempre disponible)
+# -------------------------------------------------------------------
+
+def render_html_from_analysis(*, campaign: Dict[str, Any], analysis: Dict[str, Any]) -> str:
+    """Renderiza el HTML del reporte (sin convertir a PDF)."""
     env = Environment(loader=BaseLoader(), autoescape=True)
     tmpl = env.from_string(HTML_TEMPLATE)
-    overall_pct = _pct(analysis.get("sentiment_score"), analysis.get("sentiment_score_pct"))
+    overall_pct = _pct(
+        analysis.get("sentiment_score"), 
+        analysis.get("sentiment_score_pct")
+    )
 
     html = tmpl.render(
         title=f"{campaign.get('name') or campaign.get('query') or 'Campaña'} — Reporte",
         campaign_title=campaign.get("name") or campaign.get("query") or "Campaña",
-        now=__import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M"),
+        now=dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
         overall_label=analysis.get("sentiment_label"),
         overall_pct=overall_pct,
         overall_summary=analysis.get("summary"),
         topics=analysis.get("topics") or [],
         items=analysis.get("items") or [],
-        _pct=_pct,  # pasa helper para items
+        _pct=_pct,  # helper para calcular % en items
     )
-    pdf_bytes = HTML(string=html).write_pdf()  # <-- rápido si WeasyPrint está OK
+    return html
+
+# -------------------------------------------------------------------
+# PDF con WeasyPrint (lazy import y error claro si falta)
+# -------------------------------------------------------------------
+
+def generate_pdf_from_analysis(*, campaign: Dict[str, Any], analysis: Dict[str, Any]) -> bytes:
+    """Convierte el HTML del reporte a PDF usando WeasyPrint.
+    Lanza RuntimeError("WEASYPRINT_MISSING") si no está disponible.
+    """
+    try:
+        from weasyprint import HTML  # lazy import para no romper en arranque
+    except Exception as e:
+        # Deja rastro claro para que el router haga fallback a HTML
+        raise RuntimeError("WEASYPRINT_MISSING") from e
+
+    html = render_html_from_analysis(campaign=campaign, analysis=analysis)
+    pdf_bytes = HTML(string=html).write_pdf()
     return pdf_bytes
+
+# -------------------------------------------------------------------
+# Best-effort: intenta PDF y, si no, regresa HTML
+# -------------------------------------------------------------------
+
+def generate_best_effort_report(
+    *, campaign: Dict[str, Any], analysis: Dict[str, Any]
+) -> Tuple[bytes, str]:
+    """Devuelve (data, mime_type):
+       - Si hay WeasyPrint: (pdf_bytes, 'application/pdf')
+       - Si NO hay WeasyPrint: (html_bytes, 'text/html; charset=utf-8')
+    """
+    try:
+        pdf = generate_pdf_from_analysis(campaign=campaign, analysis=analysis)
+        return pdf, "application/pdf"
+    except RuntimeError as e:
+        if str(e) == "WEASYPRINT_MISSING":
+            html = render_html_from_analysis(campaign=campaign, analysis=analysis)
+            return html.encode("utf-8"), "text/html; charset=utf-8"
+        raise
