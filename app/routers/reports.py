@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 from typing import Any, Dict, Optional, Tuple, Union
 
 from fastapi import APIRouter, HTTPException, Request
@@ -82,9 +83,10 @@ async def post_report(payload: Dict[str, Any], request: Request):
 
             default_name = safe_filename(suggested_name)
             pdf_bytes, final_name = _normalize_pdf_result(result, default_name)
+            _assert_pdf_bytes(pdf_bytes)
 
-            return StreamingResponse(
-                io.BytesIO(pdf_bytes),
+            return Response(
+                content=pdf_bytes,
                 media_type="application/pdf",
                 headers={
                     "Content-Disposition": f'attachment; filename="{final_name}"',
@@ -97,15 +99,14 @@ async def post_report(payload: Dict[str, Any], request: Request):
             # si falla, continuamos con el fallback externo
             pass
 
-        # 2) Fallback a microservicio externo (recomendado para Render/Netlify)
-        # 2) Fallback a microservicio externo (recomendado para Render/Netlify)
+    # 2) Fallback a microservicio externo (recomendado para Render/Netlify)
     pdf_service = PDF_SERVICE_URL
     if not pdf_service:
-        raise HTTPException(status_code=500, detail="WEASYPRINT_MISSING")
+        raise HTTPException(status_code=500, detail="PDF_SERVICE_URL not configured")
 
     try:
         url = f"{pdf_service}/pdf"  # ruta correcta del microservicio
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
             resp = await client.post(
                 url,
                 json=payload,
@@ -118,28 +119,11 @@ async def post_report(payload: Dict[str, Any], request: Request):
 
         # SIEMPRE trabajar con bytes, NO con .text
         pdf_bytes = resp.content or b""
-        if not pdf_bytes:
-            raise HTTPException(status_code=502, detail="PDF service returned empty body")
-
-        # Comprobación fuerte de cabecera PDF
-        if not pdf_bytes.startswith(b"%PDF-"):
-            # Si no es PDF, intenta leer un preview de texto para el detalle
-            preview = ""
-            try:
-                preview = resp.text[:280]
-            except Exception:
-                pass
-            raise HTTPException(status_code=500, detail=f"PDF service returned non-PDF: {preview}")
+        _assert_pdf_bytes(pdf_bytes, resp)
 
         # Intentar extraer filename del microservicio si lo envió
-        disp = resp.headers.get("Content-Disposition", "") or resp.headers.get("content-disposition", "")
-        filename_from_service = None
-        if "filename=" in disp:
-            # Extrae lo que esté entre comillas si existen; si no, toma lo que sigue a filename=
-            import re
-            m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', disp, flags=re.IGNORECASE)
-            if m:
-                filename_from_service = m.group(1)
+        disp = resp.headers.get("Content-Disposition") or resp.headers.get("content-disposition") or ""
+        filename_from_service = _extract_filename(disp)
 
         # Nombre final
         final_name = safe_filename(filename_from_service or suggested_name)
@@ -153,34 +137,6 @@ async def post_report(payload: Dict[str, Any], request: Request):
             },
         )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"PDF proxy failed: {e}")
-
-        # Intentar tomar filename del micro (Content-Disposition)
-        disp = resp.headers.get("content-disposition") or ""
-        filename = None
-        if "filename=" in disp:
-            # formato habitual: attachment; filename="Nombre Con Espacios.pdf"
-            try:
-                import re
-                m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', disp, re.IGNORECASE)
-                if m:
-                    filename = m.group(1)
-            except Exception:
-                filename = None
-
-        final_name = safe_filename(filename or suggested_name)
-
-        return StreamingResponse(
-            io.BytesIO(pdf_bytes),
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": f'attachment; filename="{final_name}"',
-                "Access-Control-Expose-Headers": "Content-Disposition",
-            },
-        )
     except HTTPException:
         raise
     except Exception as e:
@@ -201,6 +157,32 @@ def safe_filename(name: Optional[str]) -> str:
     if not base.lower().endswith(".pdf"):
         base += ".pdf"
     return base
+
+def _extract_filename(content_disposition: str) -> Optional[str]:
+    """
+    Extrae filename de Content-Disposition si existe.
+    Acepta variantes con filename* y comillas.
+    """
+    if not content_disposition:
+        return None
+    m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', content_disposition, flags=re.IGNORECASE)
+    return m.group(1) if m else None
+
+def _assert_pdf_bytes(pdf_bytes: Union[bytes, bytearray], resp: httpx.Response | None = None) -> None:
+    """
+    Verifica que los bytes empiecen con '%PDF-'. Si no, intenta producir
+    un detalle legible para diagnóstico.
+    """
+    if not isinstance(pdf_bytes, (bytes, bytearray)) or not pdf_bytes:
+        raise HTTPException(status_code=500, detail="Empty or invalid PDF bytes")
+    if not bytes(pdf_bytes).startswith(b"%PDF-"):
+        preview = ""
+        if resp is not None:
+            try:
+                preview = resp.text[:280]
+            except Exception:
+                preview = ""
+        raise HTTPException(status_code=500, detail=f"PDF service returned non-PDF: {preview or 'invalid header'}")
 
 def _normalize_pdf_result(
     result: Union[bytes, bytearray, Tuple[Union[bytes, bytearray], Optional[str]]],
