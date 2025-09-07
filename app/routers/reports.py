@@ -1,7 +1,6 @@
 # app/routers/reports.py
 from __future__ import annotations
 
-import io
 import os
 import re
 from typing import Any, Dict, Optional, Tuple, Union
@@ -134,6 +133,7 @@ async def post_report(payload: Dict[str, Any], request: Request):
     except Exception as e:
         # Error de red/timeout/formato, etc.
         raise HTTPException(status_code=502, detail=f"PDF proxy failed: {e}")
+
 # ---------------------
 # Utilidades
 # ---------------------
