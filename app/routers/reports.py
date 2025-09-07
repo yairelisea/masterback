@@ -2,14 +2,11 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse, Response
 from typing import Any, Dict
-import io
-import os
+import io, os
 
-# Usa el generador que tengas disponible en services
-# (si tu servicio se llama diferente, ajusta el import)
-from app.services.report import generate_best_effort_report
+from app.services.report import generate_pdf_from_analysis
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -18,7 +15,7 @@ async def reports_ping():
     return {"ok": True, "scope": "reports"}
 
 @router.get("/pdf/{campaign_id}", tags=["reports"])
-async def get_report_file(campaign_id: str):
+async def get_report(campaign_id: str):
     """
     Opción B (por si guardaste PDFs en /tmp), devuelve un PDF por ID si existe.
     """
@@ -28,33 +25,14 @@ async def get_report_file(campaign_id: str):
     return FileResponse(file_path, media_type="application/pdf", filename=f"{campaign_id}.pdf")
 
 @router.post("/pdf", tags=["reports"])
-async def create_report_pdf(payload: Dict[str, Any]):
+async def post_report(payload: Dict[str, Any]):
     """
-    Espera JSON:
+    Espera:
     {
-      "campaign": { "name": "...", "query": "..." },
-      "analysis": {
-        "summary": "...",
-        "sentiment_label": "...",
-        "sentiment_score": 0.23,
-        "sentiment_score_pct": 61,          # opcional
-        "topics": ["..."],
-        "items": [
-           {
-             "title": "...",
-             "url": "https://...",
-             "source": "...",
-             "llm": {
-               "summary": "...",
-               "sentiment_label": "...",
-               "sentiment_score": 0.1,
-               "sentiment_score_pct": 55     # opcional
-             }
-           },
-           ...
-        ]
-      }
+      "campaign": {...},
+      "analysis": {...}
     }
+    No recalcula el análisis: sólo renderiza y responde el PDF.
     """
     try:
         campaign = payload.get("campaign") or {}
@@ -62,13 +40,39 @@ async def create_report_pdf(payload: Dict[str, Any]):
         if not analysis:
             raise HTTPException(status_code=400, detail="analysis es requerido")
 
-        # Genera el PDF en memoria (bytes)
-        pdf_bytes: bytes = generate_best_effort_report(campaign=campaign, analysis=analysis)
+        result = generate_pdf_from_analysis(campaign=campaign, analysis=analysis)
 
-        filename = (campaign.get("name") or campaign.get("query") or "Reporte") + ".pdf"
+        # Si el servicio ya devolvió una Response (raro, pero por si acaso), la regresamos tal cual
+        if isinstance(result, Response):
+            return result
+
+        pdf_bytes: bytes
+        filename: str | None = None
+        content_type: str = "application/pdf"
+
+        if isinstance(result, (list, tuple)):
+            # Aceptamos (bytes,), (bytes, filename), (bytes, filename, content_type)
+            if not result:
+                raise ValueError("La función de generación devolvió un tuple vacío.")
+            pdf_bytes = result[0]
+            if len(result) >= 2 and isinstance(result[1], str):
+                filename = result[1]
+            if len(result) >= 3 and isinstance(result[2], str):
+                content_type = result[2]
+        else:
+            # Asumimos que es bytes
+            pdf_bytes = result  # type: ignore[assignment]
+
+        if not isinstance(pdf_bytes, (bytes, bytearray)):
+            raise TypeError("a bytes-like object is required, not %r" % type(pdf_bytes).__name__)
+
+        # Nombre por defecto si no llegó
+        if not filename:
+            filename = (campaign.get("name") or campaign.get("query") or "Reporte") + ".pdf"
+
         return StreamingResponse(
             io.BytesIO(pdf_bytes),
-            media_type="application/pdf",
+            media_type=content_type,
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
     except HTTPException:
