@@ -1,19 +1,16 @@
 # app/routers/reports.py
 from __future__ import annotations
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse
-from typing import Any, Dict, Optional
-from app.services.report import generate_report_pdf
-import io
-import os
+from typing import Any, Dict
+import io, os
 
-router = APIRouter(tags=["reports"])
+from app.services.report import generate_pdf_from_analysis
+
+router = APIRouter(prefix="/reports", tags=["reports"])
 
 @router.get("/pdf/{campaign_id}")
 async def get_report(campaign_id: str):
-    """
-    Serves a PDF report file from /tmp/{campaign_id}.pdf if it exists.
-    """
     file_path = f"/tmp/{campaign_id}.pdf"
     if not os.path.isfile(file_path):
         raise HTTPException(status_code=404, detail="Report not found")
@@ -22,32 +19,35 @@ async def get_report(campaign_id: str):
 @router.post("/pdf")
 async def post_report(payload: Dict[str, Any]):
     """
-    Expects JSON with parameters:
+    Espera:
     {
-      "q": "...",
-      "size": "...",
-      "days_back": ...,
-      "lang": "...",
-      "country": "..."
+      "campaign": { "name": "...", "query": "...", ... },
+      "analysis": {
+        "summary": "...",
+        "sentiment_label": "...",
+        "sentiment_score": 0.23,
+        "sentiment_score_pct": 61,   # opcional
+        "topics": [...],
+        "items": [ { title, url, source, llm:{summary, sentiment_label, sentiment_score(_pct)} }, ... ]
+      }
     }
-    Generates a PDF report using generate_report_pdf.
+    NO re-calcula el análisis. Solo renderiza y envía el PDF.
     """
     try:
-        q = payload.get("q")
-        size = payload.get("size", "A4")
-        days_back = payload.get("days_back", 7)
-        lang = payload.get("lang", "en")
-        country = payload.get("country", "US")
+        campaign = payload.get("campaign") or {}
+        analysis = payload.get("analysis") or {}
+        if not analysis:
+            raise HTTPException(status_code=400, detail="analysis es requerido")
 
-        pdf = await generate_report_pdf(q=q, size=size, days_back=days_back, lang=lang, country=country)
+        pdf = generate_pdf_from_analysis(campaign=campaign, analysis=analysis)
+        filename = (campaign.get("name") or campaign.get("query") or "Reporte") + ".pdf"
 
-        filename = "Report.pdf"
         return StreamingResponse(
             io.BytesIO(pdf),
             media_type="application/pdf",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"'
-            },
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
