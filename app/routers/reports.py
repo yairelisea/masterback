@@ -24,17 +24,32 @@ PDF_SERVICE_URL = os.getenv("PDF_SERVICE_URL", "").rstrip("/")
 # --------------------------------------------------------------------
 # GET /reports/pdf/{campaign_id}  (sirve un pdf ya generado en /tmp)
 # --------------------------------------------------------------------
-@router.get("/pdf/{campaign_id}")
-async def get_report(campaign_id: str):
-    file_path = f"/tmp/{campaign_id}.pdf"
-    if not os.path.isfile(file_path):
-        raise HTTPException(status_code=404, detail="Report not found")
-    return FileResponse(
-        file_path,
-        media_type="application/pdf",
-        filename=safe_filename(campaign_id),
-    )
+@router.get("/pdf/_check")
+async def check_pdf_service():
+    pdf_service = (os.getenv("PDF_SERVICE_URL") or PDF_SERVICE_URL or "").rstrip("/")
+    if not pdf_service:
+        raise HTTPException(status_code=500, detail="PDF_SERVICE_URL not configured")
 
+    url = f"{pdf_service}/pdf"
+    sample = {
+        "campaign": {"name": "Check Route"},
+        "analysis": {"summary": "ok", "sentiment_label": "Positivo", "sentiment_score": 0.1, "items": []},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+            resp = await client.post(url, json=sample, headers={"Accept": "application/pdf"})
+        ctype = resp.headers.get("content-type", "")
+        first5 = resp.content[:5].hex()
+        return {
+            "url": url,
+            "status_code": resp.status_code,
+            "content_type": ctype,
+            "starts_with_pdf_magic": first5.startswith("25504446"),
+            "first5_hex": first5,
+            "preview": (resp.text[:200] if "pdf" not in ctype.lower() else "<binary-pdf>"),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"check failed: {e}")
 # --------------------------------------------------------------------
 # POST /reports/pdf
 #   Espera JSON con al menos: { campaign: {...}, analysis: {...} }
