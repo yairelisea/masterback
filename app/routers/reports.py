@@ -1,3 +1,6 @@
+from fastapi import APIRouter, HTTPException, Request
+
+router = APIRouter(prefix="/reports", tags=["reports"])
 
 # ==============================
 # 2) Fallback a microservicio
