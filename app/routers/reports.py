@@ -105,10 +105,10 @@ async def post_report(payload: Dict[str, Any], request: Request):
         raise HTTPException(status_code=500, detail="WEASYPRINT_MISSING")
 
     # Intentamos rutas comunes del microservicio
-    for path in ("/render", "/pdf", ""):
+    for path in ("/pdf",):
         url = f"{pdf_service}{path}"
         try:
-            async with httpx.AsyncClient(timeout=60) as client:
+            async with httpx.AsyncClient(timeout=90) as client:
                 # Envía tal cual el payload del front
                 resp = await client.post(url, json=payload)
         except Exception as e:
