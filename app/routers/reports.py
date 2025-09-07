@@ -6,7 +6,7 @@ import os
 from typing import Any, Dict, Optional, Tuple, Union
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse, Response
 import httpx
 
 # Intentamos usar el servicio interno si existe
@@ -16,7 +16,12 @@ try:
 except Exception:
     generate_best_effort_report = None  # fallback a microservicio externo
 
+
 router = APIRouter(prefix="/reports", tags=["reports"])
+
+# URL del microservicio externo de PDF (usado en el fallback inferior).
+# Mantener en MAYÚSCULAS para coincidir con referencias existentes.
+PDF_SERVICE_URL = os.getenv("PDF_SERVICE_URL", "").rstrip("/")
 
 # --------------------------------------------------------------------
 # GET /reports/pdf/{campaign_id}  (sirve un pdf ya generado en /tmp)
@@ -175,6 +180,21 @@ async def post_report(payload: Dict[str, Any], request: Request):
 
     raise HTTPException(status_code=502, detail="No fue posible generar el PDF (servicio externo no disponible).")
 
+
+def safe_filename(name: Optional[str]) -> str:
+    """
+    Convierte un texto en un nombre de archivo seguro para cabeceras HTTP.
+    Reemplaza espacios por guiones bajos y elimina caracteres problemáticos.
+    """
+    base = (name or "Reporte").strip()
+    # Sustituir espacios por underscore
+    base = base.replace(" ", "_")
+    # Filtrar caracteres inseguros
+    allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+    base = "".join(ch for ch in base if ch in allowed)
+    if not base.lower().endswith(".pdf"):
+        base += ".pdf"
+    return base
 
 # ---------------------
 # Utilidades internas
