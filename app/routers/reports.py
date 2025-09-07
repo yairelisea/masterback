@@ -87,7 +87,10 @@ async def post_report(payload: Dict[str, Any], request: Request):
             )
             default_name = safe_filename(suggested_name)
             pdf_bytes, final_name = _normalize_pdf_result(result, default_name)
-            _assert_pdf_bytes(pdf_bytes)
+
+            # Si NO es PDF, no reventamos: caemos al fallback externo.
+            if not isinstance(pdf_bytes, (bytes, bytearray)) or not bytes(pdf_bytes).startswith(b"%PDF-"):
+                raise ValueError("INTERNAL_GENERATOR_RETURNED_NON_PDF")
 
             return Response(
                 content=pdf_bytes,
@@ -98,9 +101,10 @@ async def post_report(payload: Dict[str, Any], request: Request):
                 },
             )
         except HTTPException:
+            # Errores propios del generador interno se propagan tal cual
             raise
         except Exception:
-            # caemos al fallback externo
+            # Cualquier otro problema (incluye NON_PDF) -> usar fallback externo
             pass
 
     # ==============================
