@@ -100,48 +100,66 @@ async def post_report(payload: Dict[str, Any], request: Request):
             pass
 
     # 2) Fallback a microservicio externo (recomendado para Render/Netlify)
+       # 2) Fallback a microservicio externo (recomendado para Render/Netlify)
     pdf_service = PDF_SERVICE_URL
     if not pdf_service:
         raise HTTPException(status_code=500, detail="PDF_SERVICE_URL not configured")
 
+    url = f"{pdf_service}/pdf"  # ruta correcta del microservicio
     try:
-        url = f"{pdf_service}/pdf"  # ruta correcta del microservicio
-        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
-            resp = await client.post(
-                url,
-                json=payload,
-                headers={"Accept": "application/pdf"},  # pedimos PDF explícitamente
+        # Reintento simple por posibles respuestas HTML en frío
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(120.0),
+            follow_redirects=True,
+        ) as client:
+            last_resp = None
+            for attempt in range(2):
+                resp = await client.post(
+                    url,
+                    json=payload,
+                    headers={"Accept": "application/pdf"},
+                )
+                last_resp = resp
+
+                # SIEMPRE bytes, nunca resp.text para el binario
+                pdf_bytes = resp.content or b""
+                ctype = (resp.headers.get("content-type") or "").lower()
+
+                # Si aparenta ser PDF válido, salimos del bucle
+                if pdf_bytes.startswith(b"%PDF-"):
+                    break
+
+            if last_resp is None:
+                raise HTTPException(status_code=502, detail="PDF proxy failed: no response")
+
+            # Validación final (bytes deben iniciar con %PDF-)
+            if not pdf_bytes.startswith(b"%PDF-"):
+                preview = ""
+                try:
+                    # ojo: ahora sí, sólo para diagnosticar texto
+                    preview = last_resp.text[:280]
+                except Exception:
+                    preview = ""
+                raise HTTPException(status_code=502, detail=f"PDF service returned non-PDF: {preview or 'invalid header'}")
+
+            # Nombre final: sólo desde Content-Disposition o sugerido (NUNCA de content-type)
+            disp = last_resp.headers.get("Content-Disposition") or last_resp.headers.get("content-disposition") or ""
+            filename_from_service = _extract_filename(disp)
+            final_name = safe_filename(filename_from_service or suggested_name)
+
+            return Response(
+                content=pdf_bytes,
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{final_name}"',
+                    "Access-Control-Expose-Headers": "Content-Disposition",
+                },
             )
-
-        if resp.status_code >= 300:
-            # Propaga texto de error del microservicio
-            raise HTTPException(status_code=resp.status_code, detail=resp.text)
-
-        # SIEMPRE trabajar con bytes, NO con .text
-        pdf_bytes = resp.content or b""
-        _assert_pdf_bytes(pdf_bytes, resp)
-
-        # Intentar extraer filename del microservicio si lo envió
-        disp = resp.headers.get("Content-Disposition") or resp.headers.get("content-disposition") or ""
-        filename_from_service = _extract_filename(disp)
-
-        # Nombre final
-        final_name = safe_filename(filename_from_service or suggested_name)
-
-        return Response(
-            content=pdf_bytes,
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": f'attachment; filename="{final_name}"',
-                "Access-Control-Expose-Headers": "Content-Disposition",
-            },
-        )
 
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"PDF proxy failed: {e}")
-
 # ---------------------
 # Utilidades
 # ---------------------
