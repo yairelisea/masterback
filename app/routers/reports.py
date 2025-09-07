@@ -44,25 +44,14 @@ async def get_report(campaign_id: str):
 @router.post("/pdf")
 async def post_report(payload: Dict[str, Any], request: Request):
     """
-    Payload esperado desde el front:
+    Espera JSON como:
     {
-      "campaign": { "name": "...", "query": "...", ... },
-      "analysis": {
-        "summary": "...",
-        "sentiment_label": "...",
-        "sentiment_score": 0.23,
-        "sentiment_score_pct": 61,   # opcional
-        "topics": [...],
-        "items": [
-          { "title": "...", "url": "...", "source": "...",
-            "llm": { "summary": "...", "sentiment_label": "...", "sentiment_score": 0.12, "sentiment_score_pct": 56 } },
-          ...
-        ]
-      }
+      "campaign": { "name": "...", "query": "..." },
+      "analysis": { "summary": "...", "sentiment_label": "...", "items": [...] }
     }
-    No recalcula IA: solo renderiza y devuelve el PDF.
+    NO recalcula IA: solo renderiza y devuelve el PDF (adjunto).
     """
-    # Validación mínima
+    # --- Validación mínima
     campaign = payload.get("campaign") or {}
     analysis = payload.get("analysis") or {}
     if not analysis:
@@ -71,16 +60,17 @@ async def post_report(payload: Dict[str, Any], request: Request):
     # Nombre sugerido del archivo
     suggested_name = (campaign.get("name") or campaign.get("query") or "Reporte").strip() or "Reporte"
 
-    # 1) Intento con servicio interno (si está disponible y operativo)
+    # ==============================
+    # 1) Intento con servicio interno
+    # ==============================
     if callable(generate_best_effort_report):
         try:
-            # Puede ser sync o async y puede devolver bytes o (bytes, filename)
+            # Puede ser sync o async y devolver bytes o (bytes, filename)
             result = await _maybe_async(
                 generate_best_effort_report,
                 campaign=campaign,
                 analysis=analysis,
             )
-
             default_name = safe_filename(suggested_name)
             pdf_bytes, final_name = _normalize_pdf_result(result, default_name)
             _assert_pdf_bytes(pdf_bytes)
@@ -96,69 +86,53 @@ async def post_report(payload: Dict[str, Any], request: Request):
         except HTTPException:
             raise
         except Exception:
-            # si falla, continuamos con el fallback externo
+            # caemos al fallback externo
             pass
 
-
-       # 2) Fallback a microservicio externo (recomendado para Render/Netlify)
-    pdf_service = PDF_SERVICE_URL
+    # ==============================
+    # 2) Fallback a microservicio
+    # ==============================
+    pdf_service = (os.getenv("PDF_SERVICE_URL") or PDF_SERVICE_URL or "").rstrip("/")
     if not pdf_service:
+        # Sin microservicio configurado
         raise HTTPException(status_code=500, detail="PDF_SERVICE_URL not configured")
 
-    url = f"{pdf_service}/pdf"  # ruta correcta del microservicio
+    url = f"{pdf_service}/pdf"  # Ruta del microservicio
+
     try:
-        # Reintento simple por posibles respuestas HTML en frío
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(120.0),
-            follow_redirects=True,
-        ) as client:
-            last_resp = None
-            for attempt in range(2):
-                resp = await client.post(
-                    url,
-                    json=payload,
-                    headers={"Accept": "application/pdf"},
-                )
-                last_resp = resp
-
-                # SIEMPRE bytes, nunca resp.text para el binario
-                pdf_bytes = resp.content or b""
-                ctype = (resp.headers.get("content-type") or "").lower()
-
-                # Si aparenta ser PDF válido, salimos del bucle
-                if pdf_bytes.startswith(b"%PDF-"):
-                    break
-
-            if last_resp is None:
-                raise HTTPException(status_code=502, detail="PDF proxy failed: no response")
-
-            # Validación final (bytes deben iniciar con %PDF-)
-            if not pdf_bytes.startswith(b"%PDF-"):
-                preview = ""
-                try:
-                    # ojo: ahora sí, sólo para diagnosticar texto
-                    preview = last_resp.text[:280]
-                except Exception:
-                    preview = ""
-                raise HTTPException(status_code=502, detail=f"PDF service returned non-PDF: {preview or 'invalid header'}")
-
-            # Nombre final: sólo desde Content-Disposition o sugerido (NUNCA de content-type)
-            disp = last_resp.headers.get("Content-Disposition") or last_resp.headers.get("content-disposition") or ""
-            filename_from_service = _extract_filename(disp)
-            final_name = safe_filename(filename_from_service or suggested_name)
-
-            return Response(
-                content=pdf_bytes,
-                media_type="application/pdf",
-                headers={
-                    "Content-Disposition": f'attachment; filename="{final_name}"',
-                    "Access-Control-Expose-Headers": "Content-Disposition",
-                },
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+            resp = await client.post(
+                url,
+                json=payload,
+                headers={"Accept": "application/pdf"},  # pedimos PDF explícitamente
             )
+
+        # Si el microservicio regresó error, lo propagamos con su texto
+        if resp.status_code >= 300:
+            raise HTTPException(status_code=resp.status_code, detail=resp.text)
+
+        # Siempre usar bytes (NO .text)
+        pdf_bytes = resp.content or b""
+        _assert_pdf_bytes(pdf_bytes, resp)  # valida que empieza con %PDF-
+
+        # Intentar usar el filename que regrese el microservicio
+        disp = resp.headers.get("Content-Disposition") or resp.headers.get("content-disposition") or ""
+        filename_from_service = _extract_filename(disp)
+        final_name = safe_filename(filename_from_service or suggested_name)
+
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{final_name}"',
+                "Access-Control-Expose-Headers": "Content-Disposition",
+            },
+        )
 
     except HTTPException:
         raise
     except Exception as e:
+        # Error de red/timeout/formato, etc.
         raise HTTPException(status_code=502, detail=f"PDF proxy failed: {e}")
 # ---------------------
 # Utilidades
