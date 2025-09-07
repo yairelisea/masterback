@@ -73,16 +73,26 @@ async def post_report(payload: Dict[str, Any], request: Request):
     # 1) Intento con servicio interno (si está disponible y operativo)
     if callable(generate_best_effort_report):
         try:
-            maybe = await _maybe_async(generate_best_effort_report, campaign=campaign, analysis=analysis)  # type: ignore
-            pdf_bytes, final_name = _normalize_pdf_result(maybe, filename)
+            # Genera el PDF en memoria (bytes)
+            # Si tu generador se llama distinto, cámbialo aquí:
+            pdf_bytes = generate_best_effort_report(campaign=campaign, analysis=analysis)
+
+            filename = safe_filename(campaign.get("name") or campaign.get("query") or "Reporte")
+
             return StreamingResponse(
                 io.BytesIO(pdf_bytes),
                 media_type="application/pdf",
-                headers={"Content-Disposition": f'attachment; filename="{final_name}"'},
+                headers={
+                    # Dispara descarga directa
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    # Permite al frontend leer Content-Disposition vía CORS
+                    "Access-Control-Expose-Headers": "Content-Disposition",
+                },
             )
+        except HTTPException:
+            raise
         except Exception as e:
-            # seguimos al fallback externo
-            pass
+            raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
 
     # 2) Fallback a microservicio externo (recomendado para Render/Netlify)
     pdf_service = os.getenv("PDF_SERVICE_URL", "").rstrip("/")
