@@ -98,27 +98,28 @@ async def post_report(payload: Dict[str, Any], request: Request):
             pass
 
     # 2) Fallback a microservicio externo (recomendado para Render/Netlify)
+        # 2) Fallback a microservicio externo (recomendado para Render/Netlify)
     pdf_service = PDF_SERVICE_URL
     if not pdf_service:
         raise HTTPException(status_code=500, detail="WEASYPRINT_MISSING")
 
     try:
-        # Tu microservicio expone POST /pdf
-        url = f"{pdf_service}/pdf"
-        async with httpx.AsyncClient(timeout=60) as client:
+        url = f"{pdf_service}/pdf"  # el micro expone POST /pdf
+        # follow_redirects=True por si Render hace 308/307 en frío
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
             resp = await client.post(
                 url,
                 json=payload,
                 headers={"Accept": "application/pdf"},
             )
 
-        if resp.status_code >= 300:
-            # devolvemos el error textual del microservicio si lo hay
+        # Si no es 2xx devolvemos el texto de error del micro (útil para debug)
+        if resp.status_code < 200 or resp.status_code >= 300:
             raise HTTPException(status_code=resp.status_code, detail=resp.text)
 
+        # Validar que realmente sea PDF
         ctype = (resp.headers.get("content-type") or "").lower()
         pdf_bytes = resp.content
-
         if "application/pdf" not in ctype or not isinstance(pdf_bytes, (bytes, bytearray)) or not pdf_bytes:
             preview = ""
             try:
@@ -127,9 +128,23 @@ async def post_report(payload: Dict[str, Any], request: Request):
                 pass
             raise HTTPException(status_code=500, detail=f"PDF service returned non-PDF: {preview}")
 
-        final_name = safe_filename(suggested_name)
-        return Response(
-            content=pdf_bytes,
+        # Intentar tomar filename del micro (Content-Disposition)
+        disp = resp.headers.get("content-disposition") or ""
+        filename = None
+        if "filename=" in disp:
+            # formato habitual: attachment; filename="Nombre Con Espacios.pdf"
+            try:
+                import re
+                m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', disp, re.IGNORECASE)
+                if m:
+                    filename = m.group(1)
+            except Exception:
+                filename = None
+
+        final_name = safe_filename(filename or suggested_name)
+
+        return StreamingResponse(
+            io.BytesIO(pdf_bytes),
             media_type="application/pdf",
             headers={
                 "Content-Disposition": f'attachment; filename="{final_name}"',
