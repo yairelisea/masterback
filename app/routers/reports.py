@@ -99,54 +99,48 @@ async def post_report(payload: Dict[str, Any], request: Request):
             pass
 
     # 2) Fallback a microservicio externo (recomendado para Render/Netlify)
-    pdf_service = PDF_SERVICE_URL
-    if not pdf_service:
-        # No hay weasyprint/playwright interno ni microservicio configurado
-        raise HTTPException(status_code=500, detail="WEASYPRINT_MISSING")
+   # 2) Fallback a microservicio externo (recomendado para Render/Netlify)
+pdf_service = os.getenv("PDF_SERVICE_URL", "").rstrip("/")
+if not pdf_service:
+    raise HTTPException(status_code=500, detail="WEASYPRINT_MISSING")
 
-    # Intentamos rutas comunes del microservicio
-    for path in ("/pdf",):
-        url = f"{pdf_service}{path}"
-        try:
-            async with httpx.AsyncClient(timeout=90) as client:
-                # Envía tal cual el payload del front
-                resp = await client.post(url, json=payload)
-        except Exception as e:
-            # intenta el siguiente path
-            continue
-
-        if resp.status_code == 404:
-            # intenta siguiente path
-            continue
-
-        if resp.status_code >= 300:
-            # devolvemos el error del microservicio: texto bruto para diagnosticar
-            err_txt = resp.text
-            raise HTTPException(status_code=resp.status_code, detail=err_txt)
-
-        # Validar que realmente sea PDF
-        ctype = (resp.headers.get("content-type") or "").lower()
-        pdf_bytes = resp.content
-        if "application/pdf" not in ctype or not isinstance(pdf_bytes, (bytes, bytearray)) or len(pdf_bytes) == 0:
-            preview = ""
-            try:
-                preview = resp.text[:280]
-            except Exception:
-                pass
-            raise HTTPException(status_code=500, detail=f"PDF service returned non-PDF: {preview}")
-
-        final_name = safe_filename(suggested_name)
-        return StreamingResponse(
-            io.BytesIO(pdf_bytes),
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": f'attachment; filename="{final_name}"',
-                "Access-Control-Expose-Headers": "Content-Disposition",
-            },
+try:
+    url = f"{pdf_service}/pdf"  # ← ruta correcta del microservicio
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            url,
+            json=payload,
+            headers={"Accept": "application/pdf"}  # ← pedimos PDF explícitamente
         )
 
-    # Si llegamos aquí, no fue posible generar el PDF
-    raise HTTPException(status_code=502, detail="No fue posible generar el PDF (servicio externo no disponible).")
+    if resp.status_code >= 300:
+        # devolvemos el error textual del microservicio si lo hay
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+
+    ctype = (resp.headers.get("content-type") or "").lower()
+    pdf_bytes = resp.content
+
+    if "application/pdf" not in ctype or not isinstance(pdf_bytes, (bytes, bytearray)) or not pdf_bytes:
+        preview = ""
+        try:
+            preview = resp.text[:280]
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"PDF service returned non-PDF: {preview}")
+
+    final_name = safe_filename(suggested_name)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{final_name}"',
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
+    )
+except HTTPException:
+    raise
+except Exception as e:
+    raise HTTPException(status_code=502, detail=f"PDF proxy failed: {e}")
 
 
 def safe_filename(name: Optional[str]) -> str:
