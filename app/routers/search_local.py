@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from typing import Optional
 from app.db import get_db  # tu helper actual
 from app.models import Campaign, IngestedItem, SourceLink, SourceType  # tus modelos
-from app.services.search_local import perform_local_search  # tu buscador que ya probaste
+from app.services.search_local import search_local_news # tu buscador que ya probaste
 
 router = APIRouter(prefix="/search-local", tags=["search-local"])
 
