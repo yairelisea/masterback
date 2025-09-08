@@ -17,6 +17,7 @@ elif DATABASE_URL.startswith("postgresql://") and "+psycopg" not in DATABASE_URL
 
 engine = create_async_engine(DATABASE_URL, echo=False, future=True)
 
+
 # ✅ Aquí estaba el error, usa async_sessionmaker
 SessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False, class_=AsyncSession)
 
