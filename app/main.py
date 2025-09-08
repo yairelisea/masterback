@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.routing import APIRoute
 from .routers import reports
+from app.routers import search_local
 
 # Base y engine (para crear tablas/índices en startup)
 from .models import Base
@@ -85,6 +86,7 @@ app.include_router(analyses.router, prefix="/analyses", tags=["analyses"])
 app.include_router(news.router, prefix="/news", tags=["news"])
 app.include_router(ai_analysis.router, tags=["ai"])
 app.include_router(reports.router)
+app.inclide_router(search_local.router)
 
 # ---------- Startup: crea tablas e índices si no existen ----------
 @app.on_event("startup")
