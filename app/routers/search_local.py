@@ -1,65 +1,108 @@
 # app/routers/search_local.py
-from fastapi import APIRouter, HTTPException, Depends
-from sqlalchemy.orm import Session
-from typing import Optional
-from app.db import get_db  # tu helper actual
-from app.models import Campaign, IngestedItem, SourceLink, SourceType  # tus modelos
-from app.services.search_local import search_local_news # tu buscador que ya probaste
+from __future__ import annotations
+
+from typing import Optional, Any, Dict, List
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
+from datetime import datetime, timezone
+
+from app.db import get_session as get_db   # <— usa tu helper real (alias correcto)
+from app.models import Campaign, IngestedItem
+from app.services.search_local import search_local_news  # tu buscador
 
 router = APIRouter(prefix="/search-local", tags=["search-local"])
 
+
 @router.post("/campaign/{campaign_id}")
-async def recover_campaign_results(campaign_id: str, db: Session = Depends(get_db)):
-    camp: Optional[Campaign] = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+async def recover_campaign_results(
+    campaign_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """
+    Reejecuta la búsqueda local para una campaña existente y guarda los items en DB.
+    Devuelve un resumen con el total insertado/omitido.
+    """
+
+    # 1) Cargar campaña con select() (AsyncSession no tiene .query)
+    result = await db.execute(select(Campaign).where(Campaign.id == campaign_id))
+    camp: Optional[Campaign] = result.scalars().first()
     if not camp:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    # Toma parámetros desde la campaña (ajusta nombres reales de columnas)
-    query = camp.query or camp.name
-    city = getattr(camp, "city", None)
-    country = getattr(camp, "country", "MX")
-    lang = getattr(camp, "lang", "es-419")
-    days_back = getattr(camp, "days_back", 10)
-    limit = getattr(camp, "limit", 25)
+    # 2) Preparar parámetros de búsqueda (usa lo que ya guardas en Campaign)
+    q = camp.query
+    city = None
+    if isinstance(camp.city_keywords, list) and camp.city_keywords:
+        # si guardas una lista, toma la primera como ciudad principal
+        city = camp.city_keywords[0]
+    # Defaults razonables
+    country = camp.country or "MX"
+    lang = camp.lang or "es-419"
+    days_back = camp.days_back or 10
+    limit = camp.size or 25
 
-    # Ejecuta búsqueda local (lo que ya comprobaste por curl)
-    results = await perform_local_search(
-        query=query,
-        city=city,
+    # 3) Ejecutar la búsqueda (tu servicio ya probado con curl)
+    data = await perform_local_search(
+        query=q,
+        city=city or "",       # permite vacío si no tienes ciudad
         country=country,
         lang=lang,
         days_back=days_back,
         limit=limit,
     )
-    items = results.get("items", [])
 
-    # Persiste (evita duplicados por url/hash)
-    saved = 0
+    items: List[Dict[str, Any]] = data.get("items", []) if isinstance(data, dict) else []
+    inserted = 0
+    skipped = 0
+
+    # 4) Upsert simple de IngestedItem por (campaignId, url)
     for it in items:
-        url = it.get("url")
-        if not url:
-            continue
-        exists = (
-            db.query(CampaignItem)
-            .filter(CampaignItem.campaign_id == campaign_id, CampaignItem.url == url)
-            .first()
-        )
-        if exists:
-            continue
-        db.add(CampaignItem(
-            campaign_id=campaign_id,
-            title=it.get("title"),
-            url=url,
-            source=it.get("source"),
-            published_at=it.get("published_at"),
-            summary=it.get("summary"),
-        ))
-        saved += 1
+        url = (it.get("url") or "").strip()
+        title = (it.get("title") or "").strip()
+        published_at = it.get("published_at")
 
-    db.commit()
+        if not url or not title:
+            skipped += 1
+            continue
+
+        # ¿Existe ya este URL para esta campaña?
+        dup_q = select(IngestedItem).where(
+            IngestedItem.campaignId == camp.id,
+            IngestedItem.url == url,
+        )
+        dup_res = await db.execute(dup_q)
+        exists = dup_res.scalars().first()
+        if exists:
+            skipped += 1
+            continue
+
+        # Parse fecha si viene
+        pub_dt = None
+        if published_at:
+            try:
+                pub_dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+            except Exception:
+                pub_dt = None
+
+        db.add(IngestedItem(
+            campaignId=camp.id,
+            title=title,
+            url=url,
+            publishedAt=pub_dt,
+        ))
+        inserted += 1
+
+    # 5) Commit
+    await db.commit()
 
     return {
-        "campaign_id": campaign_id,
-        "saved_count": saved,
-        "total_found": len(items),
+        "campaign_id": camp.id,
+        "query": q,
+        "city": city,
+        "country": country,
+        "lang": lang,
+        "requested": len(items),
+        "inserted": inserted,
+        "skipped": skipped,
     }
