@@ -1,54 +1,65 @@
 # app/routers/search_local.py
-from __future__ import annotations
-
-from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
-
-from app.services.search_local import search_local_news
-
-# Si quieres persistir, importa tu helper de DB
-# from app.db import save_articles  # <-- ajústalo a tu proyecto si existe
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.orm import Session
+from typing import Optional
+from app.db import get_db  # tu helper actual
+from app.models import Campaign, CampaignItem  # tus modelos
+from app.services.search_local import perform_local_search  # tu buscador que ya probaste
 
 router = APIRouter(prefix="/search-local", tags=["search-local"])
 
-class SearchLocalBody(BaseModel):
-    query: str = Field(..., description="Texto a buscar (actor/localidad)")
-    city: Optional[str] = None
-    country: Optional[str] = None
-    lang: Optional[str] = "es-419"
-    days_back: int = 7
-    limit: int = 25
-    # campaign_id es opcional; si lo recibimos, guardamos con ese id
-    campaign_id: Optional[str] = None
+@router.post("/campaign/{campaign_id}")
+async def recover_campaign_results(campaign_id: str, db: Session = Depends(get_db)):
+    camp: Optional[Campaign] = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
 
-@router.post("", summary="Busca noticias locales (RSS públicos) y retorna items normalizados")
-async def search_local(body: SearchLocalBody) -> Dict[str, Any]:
-    try:
-        items = await search_local_news(
-            query=body.query,
-            city=body.city,
-            country=body.country,
-            lang=body.lang,
-            days_back=body.days_back,
-            limit=body.limit,
+    # Toma parámetros desde la campaña (ajusta nombres reales de columnas)
+    query = camp.query or camp.name
+    city = getattr(camp, "city", None)
+    country = getattr(camp, "country", "MX")
+    lang = getattr(camp, "lang", "es-419")
+    days_back = getattr(camp, "days_back", 10)
+    limit = getattr(camp, "limit", 25)
+
+    # Ejecuta búsqueda local (lo que ya comprobaste por curl)
+    results = await perform_local_search(
+        query=query,
+        city=city,
+        country=country,
+        lang=lang,
+        days_back=days_back,
+        limit=limit,
+    )
+    items = results.get("items", [])
+
+    # Persiste (evita duplicados por url/hash)
+    saved = 0
+    for it in items:
+        url = it.get("url")
+        if not url:
+            continue
+        exists = (
+            db.query(CampaignItem)
+            .filter(CampaignItem.campaign_id == campaign_id, CampaignItem.url == url)
+            .first()
         )
+        if exists:
+            continue
+        db.add(CampaignItem(
+            campaign_id=campaign_id,
+            title=it.get("title"),
+            url=url,
+            source=it.get("source"),
+            published_at=it.get("published_at"),
+            summary=it.get("summary"),
+        ))
+        saved += 1
 
-        # Persistencia opcional si traes campaign_id y tienes helper
-        # if body.campaign_id and items:
-        #     try:
-        #         save_articles(campaign_id=body.campaign_id, items=items)
-        #     except Exception:
-        #         pass  # no rompemos la respuesta si falla guardar
+    db.commit()
 
-        return {
-            "query": body.query,
-            "city": body.city,
-            "country": body.country,
-            "count": len(items),
-            "items": items,
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"search_local failed: {e}")
+    return {
+        "campaign_id": campaign_id,
+        "saved_count": saved,
+        "total_found": len(items),
+    }
