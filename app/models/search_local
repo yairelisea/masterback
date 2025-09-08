@@ -1,0 +1,25 @@
+# app/models/search_local.py
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy.orm import relationship
+from datetime import datetime
+from app.db.base_class import Base  # usa tu Base existente
+
+class LocalSource(Base):
+    __tablename__ = "local_sources"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(150), nullable=False)
+    domain = Column(String(255), nullable=True)
+    location = Column(String(120), nullable=True)
+
+class LocalArticle(Base):
+    __tablename__ = "local_articles"
+    id = Column(Integer, primary_key=True, index=True)
+    campaign_id = Column(String(64), index=True, nullable=True)  # si ya usas UUID, ajusta tipo
+    query = Column(String(300), index=True, nullable=False)
+    source_name = Column(String(150), nullable=True)
+    source_domain = Column(String(255), nullable=True)
+    title = Column(String(500), nullable=False)
+    url = Column(Text, nullable=False)
+    published_at = Column(DateTime, nullable=True)
+    location = Column(String(120), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
