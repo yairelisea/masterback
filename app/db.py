@@ -1,4 +1,4 @@
-# app/db.py
+## app/db.py
 from __future__ import annotations
 
 import os
@@ -17,11 +17,16 @@ elif DATABASE_URL.startswith("postgresql://") and "+psycopg" not in DATABASE_URL
 
 engine = create_async_engine(DATABASE_URL, echo=False, future=True)
 
-
-# ✅ Aquí estaba el error, usa async_sessionmaker
+# ✅ usa async_sessionmaker
 SessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False, class_=AsyncSession)
 
 # Dependencia para FastAPI
 async def get_session() -> AsyncSession:
     async with SessionLocal() as session:
         yield session
+
+# 👇👇👇 AÑADE ESTAS 3 LÍNEAS 👇👇👇
+# Alias compat para routers que importan get_db
+get_db = get_session
+__all__ = ["engine", "SessionLocal", "get_session", "get_db"]
+# 👆👆👆
