@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session  # <- tu helper actual (yield AsyncSession)
 from app.models import Campaign, IngestedItem
-from app.services.search_local import search_local_news  # tu buscador ya probado
+from app.services.search_local import search_local_news  # ✅ usa este nombre
 
 router = APIRouter(prefix="/search-local", tags=["search-local"])
 
@@ -24,31 +24,27 @@ async def recover_campaign_results(
     y persiste los nuevos items en la DB.
     """
     # 1) Obtener campaña
-    result = await session.execute(
-        select(Campaign).where(Campaign.id == campaign_id)
-    )
+    result = await session.execute(select(Campaign).where(Campaign.id == campaign_id))
     camp: Optional[Campaign] = result.scalars().first()
     if not camp:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
     # 2) Preparar parámetros (usa lo que ya tengas en Campaign)
     query = camp.query
-    # Si guardas ciudad en city_keywords (array), puedes tomar la primera
     city = None
-    if isinstance(camp.city_keywords, list) and camp.city_keywords:
+    # city_keywords puede no existir o no ser lista: defensivo
+    if hasattr(camp, "city_keywords") and isinstance(camp.city_keywords, list) and camp.city_keywords:
         city = camp.city_keywords[0]
 
     # 3) Ejecutar búsqueda local (usa tus defaults si faltan)
-    search_resp: Dict[str, Any] = await perform_local_search(
+    items: List[Dict[str, Any]] = await search_local_news(  # ✅ nombre correcto
         query=query,
         city=city or "",
-        country=camp.country or "MX",
-        lang=camp.lang or "es-419",
-        days_back=camp.days_back or 14,
-        limit=camp.size or 25,
+        country=(getattr(camp, "country", None) or "MX"),
+        lang=(getattr(camp, "lang", None) or "es-419"),
+        days_back=(getattr(camp, "days_back", None) or 14),
+        limit=(getattr(camp, "size", None) or 25),
     )
-
-    items: List[Dict[str, Any]] = search_resp.get("items") or []
 
     # 4) Persistir en IngestedItem (evitar duplicados por URL)
     saved = 0
@@ -59,7 +55,6 @@ async def recover_campaign_results(
         if not url or not title:
             continue
 
-        # ¿existe ya un item con misma URL y campaña?
         dup_check = await session.execute(
             select(IngestedItem).where(
                 IngestedItem.campaignId == camp.id,
@@ -71,20 +66,19 @@ async def recover_campaign_results(
 
         published_at = None
         try:
-            # si viene ISO: "2025-08-30T07:00:00+00:00"
             raw = it.get("published_at") or it.get("publishedAt")
             if raw:
-                published_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                published_at = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
         except Exception:
             published_at = None
 
         new_item = IngestedItem(
             campaignId=camp.id,
-            sourceId=None,  # si luego ligas a SourceLink, complétalo
+            sourceId=None,
             title=title,
             url=url,
             publishedAt=published_at,
-            status=None,  # usa tu Enum si lo deseas (PENDING, etc.)
+            status=None,
             createdAt=now,
         )
         session.add(new_item)
@@ -114,9 +108,9 @@ class AdHocSearchReq(BaseModel):
 @router.post("")
 async def ad_hoc_search(
     body: AdHocSearchReq,
-    session: AsyncSession = Depends(get_session),  # dejado por consistencia / futuras persistencias
+    session: AsyncSession = Depends(get_session),  # lo dejamos por consistencia / futuras persistencias
 ):
-    resp = await perform_local_search(
+    items = await search_local_news(  # ✅ nombre correcto
         query=body.query,
         city=body.city or "",
         country=body.country or "MX",
@@ -124,4 +118,10 @@ async def ad_hoc_search(
         days_back=body.days_back or 14,
         limit=body.limit or 25,
     )
-    return resp
+    return {
+        "query": body.query,
+        "city": body.city or "",
+        "country": body.country or "MX",
+        "count": len(items),
+        "items": items,
+    }
