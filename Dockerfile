@@ -1,22 +1,35 @@
-# syntax=docker/dockerfile:1
+# ==== Node deps (opcional) ====
 FROM node:20-alpine AS deps
 WORKDIR /app
-COPY package.json package-lock.json* pnpm-lock.yaml* yarn.lock* .npmrc* ./ 2>/dev/null || true
-RUN npm i --no-audit --no-fund
 
-FROM node:20-alpine AS builder
+# Copia solo si existen; el patrón package*.json permite que falte package-lock.json
+# Si NO hay package.json, el build fallaría; por eso copiamos y luego instalamos de forma condicional
+COPY package*.json . 2>/dev/null || true
+COPY pnpm-lock.yaml . 2>/dev/null || true
+COPY yarn.lock . 2>/dev/null || true
+COPY .npmrc . 2>/dev/null || true
+
+# Instala solo si hay package.json
+RUN if [ -f package.json ]; then npm i --no-audit --no-fund; fi
+
+# ==== Python backend ====
+FROM python:3.11-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
 WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
+
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential curl && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Si necesitas artefactos de Node (build) entonces:
+# COPY --from=deps /app/node_modules ./node_modules
+# COPY cualquier fuente Node necesaria y haz tu build si aplica
+
 COPY . .
-RUN npx prisma generate && npm run build
 
-FROM node:20-alpine AS runner
-WORKDIR /app
-ENV NODE_ENV=production
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/package.json ./package.json
-COPY --from=builder /app/.env.example ./.env
-EXPOSE 8080
-CMD [ "node", "dist/index.js" ]
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
