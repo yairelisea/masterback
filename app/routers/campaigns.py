@@ -1,27 +1,17 @@
 from __future__ import annotations
-
 from fastapi import APIRouter, Header, HTTPException, Depends, Request, BackgroundTasks
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from ..db import get_session
-from .. import models, schemas
-from ..models import Campaign, User
+from ..models import Campaign
 from ..schemas import CampaignCreate, CampaignOut
 from ..deps import get_current_user
-from ..services.ingest_auto import kickoff_campaign_ingest
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
-
 def _to_out(c: Campaign) -> CampaignOut:
-    # gracias a from_attributes=True en CampaignOut
     return CampaignOut.model_validate(c)
 
-
-# ------------------------
-# List campaigns
-# ------------------------
 @router.get("", response_model=list[CampaignOut])
 async def list_campaigns(
     current_user: dict = Depends(get_current_user),
@@ -31,10 +21,6 @@ async def list_campaigns(
     rows = (await db.execute(q)).scalars().all()
     return [_to_out(c) for c in rows]
 
-
-# ------------------------
-# Create campaign
-# ------------------------
 async def _safe_pipeline(token: str, campaign_id: str):
     try:
         from ..services.pipeline import run_gn_local_analyses
@@ -47,10 +33,9 @@ async def create_campaign(
     payload: CampaignCreate,
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
-    request: Request | None = None,
-    background_tasks: BackgroundTasks | None = None,
+    request: Request,                 # <-- NO opcional
+    background_tasks: BackgroundTasks # <-- NO opcional
 ):
-    # usuario viene del token; garantizado en /auth/login ya lo creamos si no existe
     campaign = Campaign(
         name=payload.name,
         query=payload.query,
@@ -59,28 +44,24 @@ async def create_campaign(
         lang=payload.lang,
         country=payload.country,
         city_keywords=payload.city_keywords,
-        plan=models.PlanTier(payload.plan.value) if hasattr(payload.plan, 'value') else models.PlanTier(payload.plan),
-        autoEnabled=payload.autoEnabled,
         userId=current_user["id"],
+        plan=getattr(payload, "plan", "BASIC"),
+        autoEnabled=getattr(payload, "autoEnabled", True),
     )
     db.add(campaign)
     await db.commit()
     await db.refresh(campaign)
 
     try:
-        auth_header = (request.headers.get("authorization") or request.headers.get("Authorization") or "") if request else ""
+        auth_header = request.headers.get("authorization") or request.headers.get("Authorization") or ""
         token = auth_header.split(" ", 1)[1].strip() if auth_header.lower().startswith("bearer ") else ""
-        if token and background_tasks is not None:
+        if token:
             background_tasks.add_task(_safe_pipeline, token, campaign.id)
     except Exception:
         pass
 
     return _to_out(campaign)
 
-
-# ------------------------
-# Get campaign by ID
-# ------------------------
 @router.get("/{campaign_id}", response_model=CampaignOut)
 async def get_campaign(
     campaign_id: str,
@@ -91,8 +72,6 @@ async def get_campaign(
     c = await db.get(Campaign, campaign_id)
     if not c:
         raise HTTPException(status_code=404, detail="Campaign not found")
-
     if not (x_admin == "true" or (x_user_id and x_user_id == c.userId)):
         raise HTTPException(status_code=403, detail="Forbidden")
-
     return _to_out(c)
