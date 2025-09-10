@@ -30,11 +30,11 @@ async def _safe_pipeline(token: str, campaign_id: str):
 
 @router.post("", response_model=CampaignOut)
 async def create_campaign(
+    request: Request,
+    background_tasks: BackgroundTasks,
     payload: CampaignCreate,
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
-    request: Request,
-    background_tasks: BackgroundTasks,
 ):
     campaign = Campaign(
         name=payload.name,
