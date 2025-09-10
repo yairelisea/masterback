@@ -9,12 +9,38 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from ..db import SessionLocal
 from ..models import Campaign, IngestedItem, ItemStatus
-from .news_fetcher import search_google_news_multi  # conservative entry point
 from .search_local import search_local_news
+import urllib.parse, feedparser, re, datetime as _dt, time as _time
+
+async def _google_news_fetch(q: str, lang: str, country: str, since: _dt.datetime, limit: int):
+    """Minimal GN via RSS using feedparser (sync)."""
+    q_param = f'"{q}"'
+    params = {"q": q_param, "hl": lang or "es-419", "gl": country or "MX", "ceid": f"{(country or 'MX')}:{(lang or 'es-419')}"}
+    url = "https://news.google.com/rss/search?" + urllib.parse.urlencode(params)
+    feed = feedparser.parse(url)
+    out = []
+    for e in getattr(feed, "entries", [])[: max(50, limit)]:
+        title = getattr(e, "title", "") or ""
+        link = getattr(e, "link", "") or ""
+        if not (title and link):
+            continue
+        dt = None
+        try:
+            if getattr(e, "published_parsed", None):
+                dt = _dt.datetime.fromtimestamp(_time.mktime(e.published_parsed), tz=_dt.timezone.utc)
+        except Exception:
+            dt = None
+        if since and dt and dt < since:
+            continue
+        out.append({"title": title, "url": link, "publishedAt": dt})
+        if len(out) >= limit:
+            break
+    return out
+
 
 async def _safe_search_google(q: str, lang: str, country: str, since: datetime, size: int) -> List[Dict[str, Any]]:
     try:
-        items = await search_google_news_multi(q=q, lang=lang, country=country, since=since, limit=size)
+        items = await _google_news_fetch(q=q, lang=lang, country=country, since=since, limit=size)
         return items or []
     except Exception:
         return []
