@@ -60,7 +60,6 @@ class Campaign(Base):
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     # Admin & subscription
-    isAdmin: Mapped[bool] = mapped_column(Boolean, default=False)
     plan: Mapped[PlanTier] = mapped_column(Enum(PlanTier), default=PlanTier.BASIC)
     # Feature flags at user level (overrides): {"comparator": true, "connectors": false}
     features: Mapped[dict | None] = mapped_column(JSON, nullable=True)
