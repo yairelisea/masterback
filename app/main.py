@@ -8,7 +8,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.routing import APIRoute
 from .routers import reports
 from app.routers import search_local
-from .routers import analyses_extra
+from .routers import analyses_extra, items
 
 # Base y engine (para crear tablas/índices en startup)
 from .models import Base
@@ -91,6 +91,7 @@ app.include_router(reports.router)
 app.include_router(search_local.router, tags=["search-local"])
 app.include_router(analyses_extra.router)
 app.include_router(admin_tools.router)
+app.include_router(items.router)
 
 # ---------- Startup: crea tablas e índices si no existen ----------
 @app.on_event("startup")
