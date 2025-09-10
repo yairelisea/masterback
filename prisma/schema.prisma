@@ -1,0 +1,50 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Campaign {
+  id          String    @id @default(cuid())
+  name        String
+  query       String
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  articles    Article[]
+  socials     SocialLink[]
+}
+
+model Article {
+  id          String   @id @default(cuid())
+  campaignId  String
+  campaign    Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  source      String
+  title       String
+  url         String   @unique
+  imageUrl    String?
+  snippet     String?
+  publishedAt DateTime?
+  sentiment   Int?     // -1,0,1
+  topics      String[]
+  summary     String?
+  raw         Json?
+  createdAt   DateTime @default(now())
+}
+
+model SocialLink {
+  id          String   @id @default(cuid())
+  campaignId  String
+  campaign    Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  platform    String?
+  url         String
+  title       String?
+  description String?
+  imageUrl    String?
+  sentiment   Int?
+  summary     String?
+  raw         Json?
+  createdAt   DateTime @default(now())
+}
