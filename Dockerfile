@@ -1,28 +1,37 @@
-# syntax=docker/dockerfile:1
+# Python 3.11 slim (Debian)
+FROM python:3.11-slim
 
-FROM node:20-alpine AS deps
-WORKDIR /app
-# Copiamos solo los manifests válidos (sin hacks de shell)
-COPY package*.json ./
-RUN npm i --no-audit --no-fund
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    DEBIAN_FRONTEND=noninteractive
 
-FROM node:20-alpine AS builder
 WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
+
+# ---- Dependencias del SO necesarias para Playwright/Chromium y fuentes ----
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl \
+    # Fuentes (equivalentes válidas en Debian)
+    fonts-unifont fonts-dejavu-core fonts-liberation \
+    # Libs de runtime que exige Chromium/Playwright
+    libglib2.0-0 libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+    libdrm2 libdbus-1-3 libxdamage1 libxfixes3 libxcomposite1 libxrandr2 \
+    libgbm1 libxkbcommon0 libasound2 libxshmfence1 libx11-6 libx11-xcb1 \
+    libxcb1 libxext6 libpango-1.0-0 libcairo2 libatspi2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---- Python deps ----
+COPY requirements.txt ./
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install -r requirements.txt
+
+# ---- Instalar navegadores de Playwright ----
+# Ya instalaste las dependencias del SO arriba, así que basta con:
+RUN playwright install chromium
+
+# ---- Copia código ----
 COPY . .
-# Genera Prisma y compila TypeScript
-ENV DATABASE_URL="postgresql://bd_bbxback_user:362pZuxhYkMzfRsQ6GBcJx9w2wTqD3T0@dpg-d2r18aumcj7s73cmtav0-a/bd_bbxback"
-RUN npx prisma generate && npm run build
 
-FROM node:20-alpine AS runner
-WORKDIR /app
-ENV NODE_ENV=production
-ENV DATABASE_URL="postgresql://bd_bbxback_user:362pZuxhYkMzfRsQ6GBcJx9w2wTqD3T0@dpg-d2r18aumcj7s73cmtav0-a/bd_bbxback"
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/prisma ./prisma
-COPY --from=builder /app/package.json ./package.json
-# Puedes copiar .env.example si quieres tener referencia en el contenedor
-# COPY --from=builder /app/.env.example ./.env
-EXPOSE 8080
-CMD ["node", "dist/index.js"]
+# ---- Exponer puerto y arrancar ----
+EXPOSE 8000
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
