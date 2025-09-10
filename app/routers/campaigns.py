@@ -50,6 +50,8 @@ async def create_campaign(
         lang=payload.lang,
         country=payload.country,
         city_keywords=payload.city_keywords,
+        plan=models.PlanTier(payload.plan.value) if hasattr(payload.plan, 'value') else models.PlanTier(payload.plan),
+        autoEnabled=payload.autoEnabled,
         userId=current_user["id"],
     )
     db.add(campaign)

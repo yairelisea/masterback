@@ -9,6 +9,12 @@ from pydantic import BaseModel, Field
 # =========================================================
 # Enums compartidos
 # =========================================================
+class PlanTierEnum(str, Enum):
+    BASIC = "BASIC"
+    PRO = "PRO"
+    UNLIMITED = "UNLIMITED"
+
+
 class SourceTypeEnum(str, Enum):
     NEWS = "NEWS"
     RSS = "RSS"
@@ -33,6 +39,8 @@ class CampaignCreate(BaseModel):
     lang: str = "es-419"
     country: str = "MX"
     city_keywords: Optional[List[str]] = None
+    plan: PlanTierEnum = PlanTierEnum.BASIC
+    autoEnabled: bool = True
 
     class Config:
         populate_by_name = True  # acepta days_back o daysBack
@@ -47,6 +55,8 @@ class CampaignOut(BaseModel):
     lang: str
     country: str
     city_keywords: Optional[List[str]] = None
+    plan: PlanTierEnum = PlanTierEnum.BASIC
+    autoEnabled: bool = True
     userId: Optional[str] = None
     createdAt: Optional[datetime] = None
 
@@ -92,6 +102,8 @@ class IngestCreate(BaseModel):
     lang: str = "es-419"
     country: str = "MX"
     city_keywords: Optional[List[str]] = None
+    plan: PlanTierEnum = PlanTierEnum.BASIC
+    autoEnabled: bool = True
 
     # Fuentes opcionales (urls directas)
     sources: Optional[List[str]] = None
@@ -168,6 +180,8 @@ class NewsSearchParams(BaseModel):
     lang: str = "es-419"
     country: str = "MX"
     city_keywords: Optional[List[str]] = None
+    plan: PlanTierEnum = PlanTierEnum.BASIC
+    autoEnabled: bool = True
 
     class Config:
         populate_by_name = True
@@ -191,3 +205,48 @@ class NewsSearchResponse(BaseModel):
 # =========================================================
 class ErrorResponse(BaseModel):
     detail: str
+
+# =========================================================
+# Admin - Users
+# =========================================================
+class AdminUserCreate(BaseModel):
+    id: str
+    email: str
+    name: Optional[str] = None
+    isAdmin: bool = False
+    plan: PlanTierEnum = PlanTierEnum.BASIC
+    features: Optional[Dict[str, Any]] = None
+
+class AdminUserUpdate(BaseModel):
+    name: Optional[str] = None
+    isAdmin: Optional[bool] = None
+    plan: Optional[PlanTierEnum] = None
+    features: Optional[Dict[str, Any]] = None
+
+class AdminUserOut(BaseModel):
+    id: str
+    email: str
+    name: Optional[str] = None
+    isAdmin: bool = False
+    plan: PlanTierEnum = PlanTierEnum.BASIC
+    features: Optional[Dict[str, Any]] = None
+    createdAt: Optional[datetime] = None
+    class Config:
+        from_attributes = True
+
+# =========================================================
+# Campaign Update (Admin)
+# =========================================================
+class CampaignUpdate(BaseModel):
+    name: Optional[str] = None
+    query: Optional[str] = None
+    size: Optional[int] = None
+    days_back: Optional[int] = Field(default=None, alias="days_back")
+    lang: Optional[str] = None
+    country: Optional[str] = None
+    city_keywords: Optional[List[str]] = None
+    plan: Optional[PlanTierEnum] = None
+    autoEnabled: Optional[bool] = None
+
+    class Config:
+        populate_by_name = True

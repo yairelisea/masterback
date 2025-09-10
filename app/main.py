@@ -12,6 +12,7 @@ from app.routers import search_local
 # Base y engine (para crear tablas/índices en startup)
 from .models import Base
 from .db import engine
+from .scheduler import start_scheduler
 
 # Routers (ajusta si alguno no existe en tu proyecto)
 from .routers import campaigns, sources, ingest, analyses, news, ai_analysis, auth

@@ -188,8 +188,30 @@ async def search_local_news(
             # sigue con la siguiente fuente
             continue
 
+
+    # --- Nueva puntuación: prioriza actor (query) sobre ciudad ---
+    def _score_item(it: dict, query: str) -> float:
+        title = (it.get("title") or "").lower()
+        summary = (it.get("summary") or "").lower()
+        blob = f"{title}\n{summary}"
+        # actor_hit: cualquier token significativo del query presente
+        q_tokens = [t for t in re.split(r"\W+", (query or "").lower()) if len(t) >= 3]
+        actor_hits = sum(1 for t in q_tokens if t and t in blob)
+        actor_score = 1.0 if actor_hits > 0 else 0.0
+        # city_hit viene del pipeline previo
+        city_hit = 1.0 if (it.get("_city_hit") or 0) else 0.0
+        # fecha
+        dt = it.get("published_at")
+        recency = 0.0
+        try:
+            # penalización leve si no hay fecha
+            recency = 0.1 if dt else 0.0
+        except Exception:
+            pass
+        # ponderación: actor tiene el doble de peso que ciudad
+        return (2.0 * actor_score) + (1.0 * city_hit) + recency
     # Orden básico: menciona ciudad primero, luego por fecha desc si hay
-    collected.sort(key=lambda x: (-(x.get("_city_hit") or 0), x.get("published_at") or ""), reverse=True)
+    collected.sort(key=lambda x: _score_item(x, query), reverse=True)
 
     # Re-rank opcional con OpenAI
     top = _rerank_with_openai(collected, query, city, top_k=min(limit, 50))

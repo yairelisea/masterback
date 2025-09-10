@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 import enum
+
+class PlanTier(enum.Enum):
+    BASIC = "BASIC"        # 1 auto update / day
+    PRO = "PRO"            # 3 auto updates / day
+    UNLIMITED = "UNLIMITED"# unlimited
+
 import uuid
 from datetime import datetime, timezone
 
@@ -30,6 +36,12 @@ class User(Base):
     name: Mapped[str | None] = mapped_column(String(200))
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
+    # Admin & subscription
+    isAdmin: Mapped[bool] = mapped_column(Boolean, default=False)
+    plan: Mapped[PlanTier] = mapped_column(Enum(PlanTier), default=PlanTier.BASIC)
+    # Feature flags at user level (overrides): {"comparator": true, "connectors": false}
+    features: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
 
 # ------------------------
 # Campaign
@@ -46,6 +58,19 @@ class Campaign(Base):
     country: Mapped[str] = mapped_column(String(8), default="MX")
     city_keywords: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    # Admin & subscription
+    isAdmin: Mapped[bool] = mapped_column(Boolean, default=False)
+    plan: Mapped[PlanTier] = mapped_column(Enum(PlanTier), default=PlanTier.BASIC)
+    # Feature flags at user level (overrides): {"comparator": true, "connectors": false}
+    features: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    # Auto-update scheduling
+    plan: Mapped[PlanTier] = mapped_column(Enum(PlanTier), default=PlanTier.BASIC)
+    autoEnabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    autoRunsToday: Mapped[int] = mapped_column(Integer, default=0)
+    autoLastReset: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lastAutoRunAt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     userId: Mapped[str | None] = mapped_column(String(50), ForeignKey("users.id"))
     user = relationship("User")
@@ -72,6 +97,12 @@ class SourceLink(Base):
     type: Mapped[SourceType] = mapped_column(Enum(SourceType), nullable=False, default=SourceType.NEWS)
     url: Mapped[str] = mapped_column(Text, nullable=False)
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    # Admin & subscription
+    isAdmin: Mapped[bool] = mapped_column(Boolean, default=False)
+    plan: Mapped[PlanTier] = mapped_column(Enum(PlanTier), default=PlanTier.BASIC)
+    # Feature flags at user level (overrides): {"comparator": true, "connectors": false}
+    features: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     # Importante: dejamos __table_args__ vacío para que los índices/unique
     # se creen de forma idempotente en main.py (IF NOT EXISTS).
@@ -101,6 +132,12 @@ class IngestedItem(Base):
     status: Mapped[ItemStatus] = mapped_column(Enum(ItemStatus), default=ItemStatus.PENDING)
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
+    # Admin & subscription
+    isAdmin: Mapped[bool] = mapped_column(Boolean, default=False)
+    plan: Mapped[PlanTier] = mapped_column(Enum(PlanTier), default=PlanTier.BASIC)
+    # Feature flags at user level (overrides): {"comparator": true, "connectors": false}
+    features: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
 
 # ------------------------
 # Analysis
@@ -122,6 +159,12 @@ class Analysis(Base):
 
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
+    # Admin & subscription
+    isAdmin: Mapped[bool] = mapped_column(Boolean, default=False)
+    plan: Mapped[PlanTier] = mapped_column(Enum(PlanTier), default=PlanTier.BASIC)
+    # Feature flags at user level (overrides): {"comparator": true, "connectors": false}
+    features: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     campaign = relationship("Campaign", back_populates="analyses")
 
 
@@ -139,6 +182,12 @@ class Plan(Base):
     notes: Mapped[str] = mapped_column(Text, default="")
     isActive: Mapped[bool] = mapped_column(Boolean, default=True)
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    # Admin & subscription
+    isAdmin: Mapped[bool] = mapped_column(Boolean, default=False)
+    plan: Mapped[PlanTier] = mapped_column(Enum(PlanTier), default=PlanTier.BASIC)
+    # Feature flags at user level (overrides): {"comparator": true, "connectors": false}
+    features: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class Subscription(Base):
@@ -166,6 +215,12 @@ class Alert(Base):
     userId: Mapped[str] = mapped_column(String(50), ForeignKey("users.id"), index=True)
     isActive: Mapped[bool] = mapped_column(Boolean, default=True)
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    # Admin & subscription
+    isAdmin: Mapped[bool] = mapped_column(Boolean, default=False)
+    plan: Mapped[PlanTier] = mapped_column(Enum(PlanTier), default=PlanTier.BASIC)
+    # Feature flags at user level (overrides): {"comparator": true, "connectors": false}
+    features: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     user = relationship("User")
 

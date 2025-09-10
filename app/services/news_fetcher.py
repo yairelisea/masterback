@@ -79,13 +79,18 @@ async def fetch_news(
         if not (title and link):
             continue
 
-        # Filtro por city_keywords en título/resumen/link
+        # Marcamos city_hit de forma suave (no filtramos):
+        city_hit = 0
         if ck_re:
             blob = f"{title}\n{summary}\n{link}"
-            if ck_re.search(blob) is None:
-                continue
+            if ck_re.search(blob) is not None:
+                city_hit = 1
 
-        items.append(FetchedItem(title=title, link=link, source=source, published_at=dt, summary=summary))
+        # Guardamos también city_hit como metadato blando (si tu struct lo admite)
+        try:
+            items.append(FetchedItem(title=title, link=link, source=source, published_at=dt, summary=summary, city_hit=city_hit))
+        except TypeError:
+            items.append(FetchedItem(title=title, link=link, source=source, published_at=dt, summary=summary))
         if len(items) >= size:
             break
     return items
