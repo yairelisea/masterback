@@ -95,33 +95,45 @@ async def recover_campaign_results(
 
 
 # Endpoint opcional para probar búsquedas sin campaña
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+# --- Ad-hoc search (sin campaña) ---
+# Permite probar la búsqueda local sin tocar DB.
 class AdHocSearchReq(BaseModel):
     query: str
     city: Optional[str] = ""
     country: Optional[str] = "MX"
     lang: Optional[str] = "es-419"
-    days_back: Optional[int] = 14
-    limit: Optional[int] = 25
+    days_back: int = Field(default=14, ge=1, le=60, description="Rango típico 1..60 días")
+    limit: int = Field(default=25, ge=1, le=50, description="Máximo 50 para evitar abuso")
 
-@router.post("")
+@router.post("", summary="Ad-hoc local search", tags=["search-local"])
 async def ad_hoc_search(
     body: AdHocSearchReq,
-    session: AsyncSession = Depends(get_session),  # lo dejamos por consistencia / futuras persistencias
+    session: AsyncSession = Depends(get_session),  # se mantiene por consistencia
 ):
-    items = await search_local_news(  # ✅ nombre correcto
-        query=body.query,
-        city=body.city or "",
-        country=body.country or "MX",
-        lang=body.lang or "es-419",
-        days_back=body.days_back or 14,
-        limit=body.limit or 25,
-    )
-    return {
-        "query": body.query,
-        "city": body.city or "",
-        "country": body.country or "MX",
-        "count": len(items),
-        "items": items,
-    }
+    """
+    Ejecuta la búsqueda local sin asociarla a una campaña de la base de datos.
+    Útil para validación rápida desde el front o curl.
+    """
+    try:
+        items = await search_local_news(
+            query=body.query,
+            city=body.city or "",
+            country=body.country or "MX",
+            lang=body.lang or "es-419",
+            days_back=body.days_back,
+            limit=body.limit,
+        )
+        return {
+            "query": body.query,
+            "city": body.city or "",
+            "country": body.country or "MX",
+            "count": len(items),
+            "items": items or [],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Nunca exponemos traceback al cliente
+        raise HTTPException(status_code=500, detail=f"ad_hoc_search failed: {e}")
