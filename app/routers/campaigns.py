@@ -33,8 +33,8 @@ async def create_campaign(
     payload: CampaignCreate,
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
-    request: Request,                 # <-- NO opcional
-    background_tasks: BackgroundTasks # <-- NO opcional
+    request: Request,
+    background_tasks: BackgroundTasks,
 ):
     campaign = Campaign(
         name=payload.name,
