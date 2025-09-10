@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, HTTPException, Depends, Request, BackgroundTasks
+from fastapi import APIRouter, Header, HTTPException, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,7 +9,6 @@ from .. import models, schemas
 from ..models import Campaign, User
 from ..schemas import CampaignCreate, CampaignOut
 from ..deps import get_current_user
-from ..services.ingest_auto import kickoff_campaign_ingest
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
