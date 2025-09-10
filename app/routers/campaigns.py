@@ -1,5 +1,5 @@
 from __future__ import annotations
-from fastapi import APIRouter, Header, HTTPException, Depends, Request, BackgroundTasks
+from fastapi import APIRouter, Header, HTTPException, Depends, Request, BackgroundTasks 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_session
@@ -52,11 +52,13 @@ async def create_campaign(
     await db.commit()
     await db.refresh(campaign)
 
+    # Lanza pipeline GN + Local + Analyses en background
     try:
         auth_header = request.headers.get("authorization") or request.headers.get("Authorization") or ""
         token = auth_header.split(" ", 1)[1].strip() if auth_header.lower().startswith("bearer ") else ""
         if token:
-            background_tasks.add_task(_safe_pipeline, token, campaign.id)
+            from ..services.pipeline import run_gn_local_analyses
+            background_tasks.add_task(run_gn_local_analyses, token, campaign.id)
     except Exception:
         pass
 
