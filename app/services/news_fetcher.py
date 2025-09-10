@@ -1,7 +1,10 @@
 # app/services/news_fetcher.py
+from __future__ import annotations
 import urllib.parse, time, datetime, httpx, feedparser, re
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
+from .query_expand import expand_actor
+from .rank import score_item
 
 def build_google_news_rss(query: str, lang: str = "es-419", country: str = "MX") -> str:
     q = f"\"{query}\""
@@ -94,4 +97,88 @@ async def fetch_news(
         if len(items) >= size:
             break
     return items
+
+
+# New relaxed multi-query search helpers
+async def _gn_fetch(queries: List[str], days_back: int, lang: str, country: str) -> List[Dict[str, Any]]:
+    """
+    Placeholder that should be wired to an implementation that returns a list of dicts
+    with keys like 'title', 'url', 'summary', 'published_at', 'source', etc.
+    """
+    raise NotImplementedError("Wire this to your existing Google News fetcher (same signature).")
+
+
+async def _site_backfill(aliases: List[str], city_boost: List[str], days_back: int, lang: str, country: str) -> List[Dict[str, Any]]:
+    # Optional: hit specific local outlets with `site:` queries. Can return empty list safely.
+    return []
+
+
+def _dedupe(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set(); out = []
+    for it in items:
+        u = (it.get("url") or "").strip().lower()
+        if u and u not in seen:
+            seen.add(u); out.append(it)
+    return out
+
+
+async def search_google_news_multi_relaxed(
+    q: str,
+    size: int = 25,
+    days_back: int = 14,
+    lang: str = "es-419",
+    country: str = "MX",
+    city_keywords: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Relaxed recall strategy to guarantee up to `size` items:
+    1) aliases + city boost
+    2) aliases national (no city)
+    3) optional site backfill
+    Then dedupe, soft-rank (actor prioritized), and truncate.
+    """
+    aliases = expand_actor(q, extra_aliases=None)
+    city_boost = [c for c in (city_keywords or []) if c and c.strip()]
+
+    # Build boosted queries
+    queries_p1 = []
+    for a in aliases:
+        if city_boost:
+            or_cities = " OR ".join([f'"{c}"' for c in city_boost])
+            queries_p1.append(f'"{a}" ({or_cities})')
+        else:
+            queries_p1.append(f'"{a}"')
+
+    items: List[Dict[str, Any]] = []
+
+    # Pass 1: GN with city boost
+    try:
+        items += await _gn_fetch(queries_p1, days_back, lang, country)
+    except Exception:
+        pass
+
+    # Pass 2: GN without city (national)
+    if len(items) < size:
+        try:
+            queries_p2 = [f'"{a}"' for a in aliases]
+            items += await _gn_fetch(queries_p2, days_back, lang, country)
+        except Exception:
+            pass
+
+    # Pass 3: site backfill (optional)
+    if len(items) < size:
+        try:
+            items += await _site_backfill(aliases, city_boost, days_back, lang, country)
+        except Exception:
+            pass
+
+    # Dedupe
+    items = _dedupe(items)
+
+    # Soft ranking
+    scored = [(score_item(it, aliases, city_boost), it) for it in items]
+    scored.sort(key=lambda x: x[0], reverse=True)
+    ranked = [it for _, it in scored]
+
+    return ranked[:size]
 
