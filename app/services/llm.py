@@ -60,3 +60,41 @@ RESUMEN/DATOS:
 
     text = resp.choices[0].message.content or ""
     return _coerce_json(text)
+
+# --- Fallback para compatibilidad con scheduler ---
+from typing import List, Dict, Any
+
+async def aggregate_perspective(
+    snippets: List[Dict[str, Any]] | None,
+    actor: str,
+    language: str = "es",
+) -> Dict[str, Any]:
+    """
+    Fallback sin LLM para que el scheduler no truene si no existe la función.
+    Espera una lista de items con llaves como 'title' y/o 'summary'.
+    Devuelve un dict tipo AIAnalysisResult parcial:
+      - verdict (str | None)
+      - key_points (list[str])
+      - perception (dict)
+    """
+    texts: List[str] = []
+    for it in (snippets or []):
+        if isinstance(it, dict):
+            t = (it.get("summary") or it.get("title") or "").strip()
+            if t:
+                texts.append(t)
+
+    # Heurística mínima (sin LLM real)
+    key_points = texts[:5]
+    verdict = None
+    perception = {
+        "note": "fallback aggregator (no-LLM)",
+        "actor": actor,
+        "language": language,
+        "count": len(texts),
+    }
+    return {
+        "verdict": verdict,
+        "key_points": key_points,
+        "perception": perception,
+    }
