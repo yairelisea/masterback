@@ -35,11 +35,20 @@ async def list_campaigns(
 # ------------------------
 # Create campaign
 # ------------------------
+async def _safe_pipeline(token: str, campaign_id: str):
+    try:
+        from ..services.pipeline import run_gn_local_analyses
+        await run_gn_local_analyses(token, campaign_id)
+    except Exception:
+        pass
+
 @router.post("", response_model=CampaignOut)
 async def create_campaign(
     payload: CampaignCreate,
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
+    request: Request | None = None,
+    background_tasks: BackgroundTasks | None = None,
 ):
     # usuario viene del token; garantizado en /auth/login ya lo creamos si no existe
     campaign = Campaign(
@@ -57,6 +66,15 @@ async def create_campaign(
     db.add(campaign)
     await db.commit()
     await db.refresh(campaign)
+
+    try:
+        auth_header = (request.headers.get("authorization") or request.headers.get("Authorization") or "") if request else ""
+        token = auth_header.split(" ", 1)[1].strip() if auth_header.lower().startswith("bearer ") else ""
+        if token and background_tasks is not None:
+            background_tasks.add_task(_safe_pipeline, token, campaign.id)
+    except Exception:
+        pass
+
     return _to_out(campaign)
 
 
