@@ -62,7 +62,7 @@ class Campaign(Base):
     # Admin & subscription
     plan: Mapped[PlanTier] = mapped_column(Enum(PlanTier), default=PlanTier.BASIC)
     # Feature flags at user level (overrides): {"comparator": true, "connectors": false}
-    features: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
 
     # Auto-update scheduling
     plan: Mapped[PlanTier] = mapped_column(Enum(PlanTier), default=PlanTier.BASIC)
