@@ -2,15 +2,15 @@ from __future__ import annotations
 import uuid
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..db import get_session
+from ..db import get_session, SessionLocal
 from ..deps import get_current_user
-from ..models import Campaign, User, PlanTier, Analysis, IngestedItem
+from ..models import Campaign, User, PlanTier, Analysis, IngestedItem, ItemStatus
 from ..schemas import (
     AdminUserOut,
     CampaignOut,
@@ -381,3 +381,62 @@ async def admin_report_campaign(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Report failed: {e}")
+# -----------------------------
+# Background pipeline (recover → normalize → process)
+# -----------------------------
+import asyncio
+
+async def _run_all_pipeline(campaign_id: str) -> None:
+    # 1) Recover local news and persist as PENDING
+    try:
+        from .search_local import _recover_campaign_results_task
+        await _recover_campaign_results_task(campaign_id)
+    except Exception:
+        # continue; best-effort
+        pass
+
+    # 2) Normalize any NULL statuses to PENDING
+    try:
+        async with SessionLocal() as db:  # type: AsyncSession
+            camp = await db.get(Campaign, campaign_id)
+            if not camp:
+                return
+            rows = (
+                await db.execute(
+                    select(IngestedItem).where(
+                        IngestedItem.campaignId == campaign_id,
+                        IngestedItem.status == None,  # noqa: E711
+                    )
+                )
+            ).scalars().all()
+            for it in rows:
+                it.status = ItemStatus.PENDING
+            if rows:
+                await db.commit()
+    except Exception:
+        pass
+
+    # 3) Process pending analyses
+    try:
+        async with SessionLocal() as db:  # type: AsyncSession
+            from .analyses_extra import process_pending as _process_pending
+            await _process_pending(campaignId=campaign_id, limit=200, db=db)  # type: ignore
+    except Exception:
+        pass
+
+
+@router.post("/campaigns/{campaign_id}/run-all")
+async def admin_run_all(
+    campaign_id: str,
+    background: bool = Query(True, description="Run in background and return immediately"),
+    _: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_session),
+):
+    # Validate existence first for quick feedback
+    camp = await db.get(Campaign, campaign_id)
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    # Always background to avoid client/proxy timeouts
+    asyncio.create_task(_run_all_pipeline(campaign_id))
+    return {"accepted": True, "campaignId": campaign_id, "mode": "async"}

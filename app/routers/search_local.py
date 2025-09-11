@@ -4,21 +4,98 @@ from __future__ import annotations
 from typing import Optional, List, Dict, Any, Union
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import get_session  # <- tu helper actual (yield AsyncSession)
+from app.db import get_session, SessionLocal  # <- helpers
 from app.models import Campaign, IngestedItem, ItemStatus
 from app.services.search_local import search_local_news  # ✅ usa este nombre
 
 router = APIRouter(prefix="/search-local", tags=["search-local"])
 
+async def _recover_campaign_results_task(campaign_id: str) -> None:
+    async with SessionLocal() as session:  # type: AsyncSession
+        # 1) Obtener campaña
+        result = await session.execute(select(Campaign).where(Campaign.id == campaign_id))
+        camp: Optional[Campaign] = result.scalars().first()
+        if not camp:
+            return
+
+        # 2) Preparar parámetros
+        query = camp.query
+        city: Optional[str] = None
+        if hasattr(camp, "city_keywords") and isinstance(camp.city_keywords, list) and camp.city_keywords:
+            try:
+                city = " ".join([str(x) for x in camp.city_keywords if isinstance(x, (str, int, float))]).strip() or None
+            except Exception:
+                city = str(camp.city_keywords[0])
+
+        # 3) Ejecutar búsqueda
+        try:
+            items: List[Dict[str, Any]] = await search_local_news(
+                query=query,
+                city=city or "",
+                country=(getattr(camp, "country", None) or "MX"),
+                lang=(getattr(camp, "lang", None) or "es-419"),
+                days_back=(getattr(camp, "days_back", None) or 14),
+                limit=(getattr(camp, "size", None) or 25),
+            )
+        except Exception:
+            return
+
+        # 4) Persistir
+        now = datetime.utcnow()
+        for it in items:
+            url = (it.get("url") or "").strip()
+            title = (it.get("title") or "").strip()
+            if not url or not title:
+                continue
+            dup_check = await session.execute(
+                select(IngestedItem).where(
+                    IngestedItem.campaignId == camp.id,
+                    IngestedItem.url == url,
+                )
+            )
+            if dup_check.scalars().first():
+                continue
+            try:
+                published_at = None
+                raw = it.get("published_at") or it.get("publishedAt")
+                if raw:
+                    published_at = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            except Exception:
+                published_at = None
+            new_item = IngestedItem(
+                campaignId=camp.id,
+                sourceId=None,
+                title=title,
+                url=url,
+                publishedAt=published_at,
+                status=ItemStatus.PENDING,
+                createdAt=now,
+            )
+            session.add(new_item)
+        try:
+            await session.commit()
+        except Exception:
+            try:
+                await session.rollback()
+            except Exception:
+                pass
+
+
 @router.post("/campaign/{campaign_id}")
 async def recover_campaign_results(
     campaign_id: str,
     session: AsyncSession = Depends(get_session),
+    background: bool = Query(False, description="Si true, ejecuta en background y devuelve 202"),
+    background_tasks: BackgroundTasks | None = None,
 ):
+    if background:
+        if background_tasks is not None:
+            background_tasks.add_task(_recover_campaign_results_task, campaign_id)
+        return {"accepted": True, "campaignId": campaign_id, "mode": "async"}
     """
     Re-ejecuta la búsqueda local para una campaña que quedó sin resultados
     y persiste los nuevos items en la DB.
