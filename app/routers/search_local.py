@@ -88,9 +88,9 @@ async def _recover_campaign_results_task(campaign_id: str) -> None:
 @router.post("/campaign/{campaign_id}")
 async def recover_campaign_results(
     campaign_id: str,
+    background_tasks: BackgroundTasks,
     session: AsyncSession = Depends(get_session),
     background: bool = Query(False, description="Si true, ejecuta en background y devuelve 202"),
-    background_tasks: BackgroundTasks,
 ):
     if background:
         background_tasks.add_task(_recover_campaign_results_task, campaign_id)
