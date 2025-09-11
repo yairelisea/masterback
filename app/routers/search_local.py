@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session  # <- tu helper actual (yield AsyncSession)
-from app.models import Campaign, IngestedItem
+from app.models import Campaign, IngestedItem, ItemStatus
 from app.services.search_local import search_local_news  # ✅ usa este nombre
 
 router = APIRouter(prefix="/search-local", tags=["search-local"])
@@ -78,7 +78,7 @@ async def recover_campaign_results(
             title=title,
             url=url,
             publishedAt=published_at,
-            status=None,
+            status=ItemStatus.PENDING,
             createdAt=now,
         )
         session.add(new_item)

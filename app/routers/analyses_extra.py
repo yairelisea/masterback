@@ -5,15 +5,14 @@ from sqlalchemy import select
 from typing import Optional, List
 
 from ..db import get_session
-from ..models import IngestedItem, Analysis
-from ..schemas import ItemStatusEnum
+from ..models import IngestedItem, Analysis, ItemStatus
 from ..services.llm import analyze_snippet
 
 router = APIRouter(prefix="/analyses", tags=["analyses"])
 
 @router.post("/process_pending")
 async def process_pending(campaignId: Optional[str] = None, limit: int = 200, db: AsyncSession = Depends(get_session)):
-    q = select(IngestedItem).where(IngestedItem.status == ItemStatusEnum.PENDING)
+    q = select(IngestedItem).where(IngestedItem.status == ItemStatus.PENDING)
     if campaignId:
         q = q.where(IngestedItem.campaignId == campaignId)
     rows: List[IngestedItem] = (await db.execute(q)).scalars().all()
@@ -23,23 +22,24 @@ async def process_pending(campaignId: Optional[str] = None, limit: int = 200, db
         try:
             res = await analyze_snippet(
                 title=it.title or "",
-                summary=it.snippet or "",
+                summary="",
                 actor="auto",
-                language="es",
             )
+            # res is a Dict with keys like: summary, sentiment_label, sentiment_score, topics, stance, perception
             a = Analysis(
                 campaignId=it.campaignId,
                 itemId=it.id,
-                sentiment=res.sentiment,
-                tone=res.tone,
-                topics=res.topics,
-                summary=(res.verdict or (res.key_points[0] if res.key_points else None)),
-                perception=res.perception,
+                sentiment=(res.get("sentiment_score") if isinstance(res, dict) else None),
+                tone=(res.get("sentiment_label") if isinstance(res, dict) else None),
+                topics=(res.get("topics") if isinstance(res, dict) else None),
+                stance=(res.get("stance") if isinstance(res, dict) else None),
+                summary=(res.get("summary") if isinstance(res, dict) else None),
+                perception=(res.get("perception") if isinstance(res, dict) else None),
             )
             db.add(a)
-            it.status = ItemStatusEnum.PROCESSED
+            it.status = ItemStatus.PROCESSED
             processed += 1
         except Exception:
-            it.status = ItemStatusEnum.ERROR
+            it.status = ItemStatus.ERROR
     await db.commit()
     return {"processed": processed, "pending_seen": len(rows)}
