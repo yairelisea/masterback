@@ -84,7 +84,7 @@ async def fetch_google_news(
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; BBXBot/1.0; +https://blackboxmonitor.com)"
     }
-    async with httpx.AsyncClient(timeout=7, headers=headers) as client:
+    async with httpx.AsyncClient(timeout=5, headers=headers) as client:
         r = await client.get(url)
         r.raise_for_status()
         xml = r.text
@@ -169,7 +169,7 @@ async def analyze_news(
     # 2) análisis por ítem
     summarized_items: List[Dict[str, Any]] = []
     # Para evitar timeouts si hay clave real de OpenAI, limitamos el nº de análisis por item
-    MAX_ANALYZED = int(os.getenv("AI_PER_ITEM_LIMIT", "12"))
+    MAX_ANALYZED = int(os.getenv("AI_PER_ITEM_LIMIT", "6"))
     to_process = articles[: max(1, min(len(articles), MAX_ANALYZED))]
     for art in to_process:
         title = art.get("title") or ""

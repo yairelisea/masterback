@@ -9,6 +9,7 @@ from openai import OpenAI
 # Ajusta por el modelo que tengas disponible en tu cuenta
 # Si usas "gpt-4o-mini" o "gpt-3.5-turbo", cámbialo aquí:
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # o "gpt-3.5-turbo"
+LLM_DISABLED = os.getenv("LLM_DISABLED", "").strip() not in ("", "0", "false", "False")
 
 # Instancia del cliente, requiere OPENAI_API_KEY en el entorno
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -49,8 +50,8 @@ RESUMEN/DATOS:
 {summary}
 """
 
-    # Si no hay API key, devolvemos un análisis neutro rápido (fallback)
-    if not client:
+    # Si no hay API key o está deshabilitado, devolvemos un análisis neutro rápido (fallback)
+    if not client or LLM_DISABLED:
         return {
             "summary": (title or "").strip()[:140],
             "sentiment_label": "neutral",

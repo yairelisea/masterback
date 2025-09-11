@@ -66,7 +66,7 @@ def _rss_sources(query: str, city: Optional[str], country: Optional[str], lang: 
 
 # -------- Fetch & normalize --------
 
-async def _fetch_rss(url: str, timeout: int = 7) -> feedparser.FeedParserDict:
+async def _fetch_rss(url: str, timeout: int = 4) -> feedparser.FeedParserDict:
     async with httpx.AsyncClient(timeout=timeout) as client:
         r = await client.get(url, headers={"User-Agent": "BBX/1.0"})
         r.raise_for_status()
