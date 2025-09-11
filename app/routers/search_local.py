@@ -1,7 +1,7 @@
 # app/routers/search_local.py
 from __future__ import annotations
 
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -31,10 +31,14 @@ async def recover_campaign_results(
 
     # 2) Preparar parámetros (usa lo que ya tengas en Campaign)
     query = camp.query
-    city = None
+    city: Optional[str] = None
     # city_keywords puede no existir o no ser lista: defensivo
     if hasattr(camp, "city_keywords") and isinstance(camp.city_keywords, list) and camp.city_keywords:
-        city = camp.city_keywords[0]
+        try:
+            # Une todas las palabras clave por compatibilidad con front (no solo la primera)
+            city = " ".join([str(x) for x in camp.city_keywords if isinstance(x, (str, int, float))]).strip() or None
+        except Exception:
+            city = str(camp.city_keywords[0])
 
     # 3) Ejecutar búsqueda local (usa tus defaults si faltan)
     try:
@@ -117,7 +121,9 @@ from pydantic import BaseModel, Field
 # Permite probar la búsqueda local sin tocar DB.
 class AdHocSearchReq(BaseModel):
     query: str
-    city: Optional[str] = ""
+    # Acepta string o lista de strings (compat con front que manda arrays)
+    city: Optional[Union[str, List[str]]] = None
+    city_keywords: Optional[List[str]] = None
     country: Optional[str] = "MX"
     lang: Optional[str] = "es-419"
     days_back: int = Field(default=14, ge=1, le=60, description="Rango típico 1..60 días")
@@ -133,9 +139,18 @@ async def ad_hoc_search(
     Útil para validación rápida desde el front o curl.
     """
     try:
+        # Coerción de city para compatibilidad: string o lista
+        city_val: Optional[str] = None
+        if isinstance(body.city, list) and body.city:
+            city_val = " ".join([str(x) for x in body.city if isinstance(x, (str, int, float))])
+        elif isinstance(body.city, str):
+            city_val = body.city
+        elif body.city_keywords:
+            city_val = " ".join([str(x) for x in body.city_keywords if isinstance(x, (str, int, float))])
+
         items = await search_local_news(
             query=body.query,
-            city=body.city or "",
+            city=(city_val or ""),
             country=body.country or "MX",
             lang=body.lang or "es-419",
             days_back=body.days_back,
