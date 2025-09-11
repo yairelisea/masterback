@@ -1,6 +1,7 @@
 # app/services/search_local.py
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -65,7 +66,7 @@ def _rss_sources(query: str, city: Optional[str], country: Optional[str], lang: 
 
 # -------- Fetch & normalize --------
 
-async def _fetch_rss(url: str, timeout: int = 20) -> feedparser.FeedParserDict:
+async def _fetch_rss(url: str, timeout: int = 7) -> feedparser.FeedParserDict:
     async with httpx.AsyncClient(timeout=timeout) as client:
         r = await client.get(url, headers={"User-Agent": "BBX/1.0"})
         r.raise_for_status()
@@ -169,24 +170,32 @@ async def search_local_news(
     collected: List[Dict[str, Any]] = []
     seen_ids = set()
 
-    for url in urls:
-        try:
-            feed = await _fetch_rss(url)
-            for entry in feed.entries or []:
-                it = _normalize_entry(entry)
-                if not it:
-                    continue
-                if not _within_days(it.get("published_at"), days_back):
-                    continue
-                # boost si menciona la ciudad
-                it["_city_hit"] = _score_city_hit(it["title"], it.get("summary",""), city)
-                if it["id"] in seen_ids:
-                    continue
-                seen_ids.add(it["id"])
-                collected.append(it)
-        except Exception:
-            # sigue con la siguiente fuente
+    # Fetch feeds concurrently to keep latency low (<= ~7s)
+    feeds: List[feedparser.FeedParserDict] = []
+    results = await asyncio.gather(*[_fetch_rss(u, timeout=7) for u in urls], return_exceptions=True)
+    for res in results:
+        if isinstance(res, Exception):
             continue
+        feeds.append(res)
+
+    for feed in feeds:
+        for entry in feed.entries or []:
+            it = _normalize_entry(entry)
+            if not it:
+                continue
+            if not _within_days(it.get("published_at"), days_back):
+                continue
+            # boost si menciona la ciudad
+            it["_city_hit"] = _score_city_hit(it["title"], it.get("summary",""), city)
+            if it["id"] in seen_ids:
+                continue
+            seen_ids.add(it["id"])
+            collected.append(it)
+            # Stop early if we already have enough candidates
+            if len(collected) >= max(limit * 2, limit):
+                break
+        if len(collected) >= max(limit * 2, limit):
+            break
 
 
     # --- Nueva puntuación: prioriza actor (query) sobre ciudad ---
