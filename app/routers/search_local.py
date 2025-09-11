@@ -37,17 +37,21 @@ async def recover_campaign_results(
         city = camp.city_keywords[0]
 
     # 3) Ejecutar búsqueda local (usa tus defaults si faltan)
-    items: List[Dict[str, Any]] = await search_local_news(  # ✅ nombre correcto
-        query=query,
-        city=city or "",
-        country=(getattr(camp, "country", None) or "MX"),
-        lang=(getattr(camp, "lang", None) or "es-419"),
-        days_back=(getattr(camp, "days_back", None) or 14),
-        limit=(getattr(camp, "size", None) or 25),
-    )
+    try:
+        items: List[Dict[str, Any]] = await search_local_news(  # ✅ nombre correcto
+            query=query,
+            city=city or "",
+            country=(getattr(camp, "country", None) or "MX"),
+            lang=(getattr(camp, "lang", None) or "es-419"),
+            days_back=(getattr(camp, "days_back", None) or 14),
+            limit=(getattr(camp, "size", None) or 25),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"local search failed: {e}")
 
     # 4) Persistir en IngestedItem (evitar duplicados por URL)
     saved = 0
+    errors: List[str] = []
     now = datetime.utcnow()
     for it in items:
         url = (it.get("url") or "").strip()
@@ -72,25 +76,37 @@ async def recover_campaign_results(
         except Exception:
             published_at = None
 
-        new_item = IngestedItem(
-            campaignId=camp.id,
-            sourceId=None,
-            title=title,
-            url=url,
-            publishedAt=published_at,
-            status=ItemStatus.PENDING,
-            createdAt=now,
-        )
-        session.add(new_item)
-        saved += 1
+        try:
+            new_item = IngestedItem(
+                campaignId=camp.id,
+                sourceId=None,
+                title=title,
+                url=url,
+                publishedAt=published_at,
+                status=ItemStatus.PENDING,
+                createdAt=now,
+            )
+            session.add(new_item)
+            saved += 1
+        except Exception as e:
+            errors.append(str(e))
 
-    await session.commit()
+    try:
+        await session.commit()
+    except Exception as e:
+        # best-effort rollback; report error
+        try:
+            await session.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"db commit failed: {e}")
 
     return {
         "campaignId": camp.id,
         "query": camp.query,
         "inserted": saved,
         "found": len(items),
+        "errors": errors,
     }
 
 

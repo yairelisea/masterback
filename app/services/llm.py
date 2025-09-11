@@ -11,7 +11,8 @@ from openai import OpenAI
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # o "gpt-3.5-turbo"
 
 # Instancia del cliente, requiere OPENAI_API_KEY en el entorno
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 SYSTEM_PROMPT = """Eres un analista de medios. Resume brevemente el contenido proporcionado y evalúa:
 - sentiment_label: "positivo" | "neutral" | "negativo"
@@ -48,18 +49,39 @@ RESUMEN/DATOS:
 {summary}
 """
 
-    # Nota: evitamos pasar 'temperature' para evitar errores de "unsupported value"
-    resp = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
-        # no temperature param
-    )
+    # Si no hay API key, devolvemos un análisis neutro rápido (fallback)
+    if not client:
+        return {
+            "summary": (title or "").strip()[:140],
+            "sentiment_label": "neutral",
+            "sentiment_score": 0.0,
+            "topics": [],
+            "stance": "neutral",
+            "perception": {"note": "fallback (no OPENAI_API_KEY)"},
+        }
 
-    text = resp.choices[0].message.content or ""
-    return _coerce_json(text)
+    # Nota: evitamos pasar 'temperature' para evitar errores de "unsupported value"
+    try:
+        resp = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+            # no temperature param
+        )
+        text = resp.choices[0].message.content or ""
+        return _coerce_json(text)
+    except Exception as e:
+        # fallback si el proveedor falla
+        return {
+            "summary": (title or "").strip()[:140],
+            "sentiment_label": "neutral",
+            "sentiment_score": 0.0,
+            "topics": [],
+            "stance": "neutral",
+            "perception": {"note": f"fallback (llm error: {e})"},
+        }
 
 # --- Fallback para compatibilidad con scheduler ---
 from typing import List, Dict, Any
