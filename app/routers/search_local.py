@@ -90,11 +90,10 @@ async def recover_campaign_results(
     campaign_id: str,
     session: AsyncSession = Depends(get_session),
     background: bool = Query(False, description="Si true, ejecuta en background y devuelve 202"),
-    background_tasks: BackgroundTasks | None = None,
+    background_tasks: BackgroundTasks,
 ):
     if background:
-        if background_tasks is not None:
-            background_tasks.add_task(_recover_campaign_results_task, campaign_id)
+        background_tasks.add_task(_recover_campaign_results_task, campaign_id)
         return {"accepted": True, "campaignId": campaign_id, "mode": "async"}
     """
     Re-ejecuta la búsqueda local para una campaña que quedó sin resultados
