@@ -72,7 +72,7 @@ async def _recover_campaign_results_task(campaign_id: str) -> None:
                 title=title,
                 url=url,
                 publishedAt=published_at,
-                status=ItemStatus.PENDING,
+                status=None,
                 createdAt=now,
             )
             session.add(new_item)

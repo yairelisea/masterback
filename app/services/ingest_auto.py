@@ -127,7 +127,7 @@ async def kickoff_campaign_ingest(campaign_id: str) -> None:
                 title=it["title"],
                 url=it["url"],
                 publishedAt=it.get("publishedAt"),
-                status=ItemStatus.PENDING
+                status=None
             ))
         try:
             await db.commit()

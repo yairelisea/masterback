@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session, SessionLocal
 from ..deps import get_current_user
-from ..models import Campaign, User, PlanTier, Analysis, IngestedItem, ItemStatus
+from ..models import Campaign, User, PlanTier, Analysis, IngestedItem, ItemStatus, SourceLink
 from ..schemas import (
     AdminUserOut,
     CampaignOut,
@@ -551,6 +551,7 @@ async def admin_report_campaign(
 # Background pipeline (recover → normalize → process)
 # -----------------------------
 import asyncio
+from sqlalchemy import delete
 
 async def _run_all_pipeline(campaign_id: str) -> None:
     # 1) Ingest via combined pipeline (Google News + Local) and persist as PENDING
@@ -561,26 +562,7 @@ async def _run_all_pipeline(campaign_id: str) -> None:
         # continue; best-effort
         pass
 
-    # 2) Normalize any NULL statuses to PENDING
-    try:
-        async with SessionLocal() as db:  # type: AsyncSession
-            camp = await db.get(Campaign, campaign_id)
-            if not camp:
-                return
-            rows = (
-                await db.execute(
-                    select(IngestedItem).where(
-                        IngestedItem.campaignId == campaign_id,
-                        IngestedItem.status == None,  # noqa: E711
-                    )
-                )
-            ).scalars().all()
-            for it in rows:
-                it.status = ItemStatus.PENDING
-            if rows:
-                await db.commit()
-    except Exception:
-        pass
+    # 2) Normalization step skipped: dejamos status NULL para compatibilidad con DB
 
     # 3) Process pending analyses
     try:
@@ -637,3 +619,46 @@ async def admin_ingest_only(
     ).all()
     by_status = {str(s[0].value if s[0] is not None else "NONE"): int(s[1]) for s in by_rows}
     return {"ok": True, "campaignId": campaign_id, "items_total": int(total_items), "by_status": by_status}
+
+
+@router.delete("/campaigns/{campaign_id}")
+async def admin_delete_campaign(
+    campaign_id: str,
+    _: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_session),
+):
+    camp = await db.get(Campaign, campaign_id)
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    # Delete related rows first
+    await db.execute(delete(Analysis).where(Analysis.campaignId == campaign_id))
+    await db.execute(delete(IngestedItem).where(IngestedItem.campaignId == campaign_id))
+    await db.execute(delete(SourceLink).where(SourceLink.campaignId == campaign_id))
+    await db.delete(camp)
+    await db.commit()
+    return {"deleted": True, "campaignId": campaign_id}
+
+
+class PurgeIn(BaseModel):
+    ids: list[str]
+
+
+@router.post("/campaigns/purge")
+async def admin_purge_campaigns(
+    payload: PurgeIn,
+    _: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_session),
+):
+    deleted = []
+    for cid in payload.ids:
+        camp = await db.get(Campaign, cid)
+        if not camp:
+            continue
+        await db.execute(delete(Analysis).where(Analysis.campaignId == cid))
+        await db.execute(delete(IngestedItem).where(IngestedItem.campaignId == cid))
+        await db.execute(delete(SourceLink).where(SourceLink.campaignId == cid))
+        await db.delete(camp)
+        deleted.append(cid)
+    await db.commit()
+    return {"deleted": deleted}
