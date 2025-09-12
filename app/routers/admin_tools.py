@@ -633,7 +633,7 @@ async def admin_delete_campaign(
 
     # Borrado robusto con commits por etapa y manejo de rollback en errores
     try:
-        await db.execute(delete(Analysis).where(Analysis.campaignId == campaign_id))
+        await db.exec_driver_sql('DELETE FROM analyses WHERE "campaignId" = :cid', {"cid": campaign_id})
         await db.commit()
     except Exception as e:
         try:
@@ -643,7 +643,7 @@ async def admin_delete_campaign(
         raise HTTPException(status_code=500, detail=f"delete analyses failed: {e}")
 
     try:
-        await db.execute(delete(IngestedItem).where(IngestedItem.campaignId == campaign_id))
+        await db.exec_driver_sql('DELETE FROM ingested_items WHERE "campaignId" = :cid', {"cid": campaign_id})
         await db.commit()
     except Exception as e:
         try:
@@ -653,7 +653,7 @@ async def admin_delete_campaign(
         raise HTTPException(status_code=500, detail=f"delete items failed: {e}")
 
     try:
-        await db.execute(delete(SourceLink).where(SourceLink.campaignId == campaign_id))
+        await db.exec_driver_sql('DELETE FROM source_links WHERE "campaignId" = :cid', {"cid": campaign_id})
         await db.commit()
     except Exception as e:
         try:
@@ -700,10 +700,10 @@ async def admin_purge_campaigns(
             if not camp:
                 errors.append({"id": cid, "detail": "not found"})
                 continue
-            # Eliminar dependientes primero
-            await db.execute(delete(Analysis).where(Analysis.campaignId == cid))
-            await db.execute(delete(IngestedItem).where(IngestedItem.campaignId == cid))
-            await db.execute(delete(SourceLink).where(SourceLink.campaignId == cid))
+            # Eliminar dependientes primero (raw SQL para evitar columnas inexistentes)
+            await db.exec_driver_sql('DELETE FROM analyses WHERE "campaignId" = :cid', {"cid": cid})
+            await db.exec_driver_sql('DELETE FROM ingested_items WHERE "campaignId" = :cid', {"cid": cid})
+            await db.exec_driver_sql('DELETE FROM source_links WHERE "campaignId" = :cid', {"cid": cid})
             await db.delete(camp)
             await db.commit()
             deleted.append(cid)
