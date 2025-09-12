@@ -10,6 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from ..db import SessionLocal
 from ..models import Campaign, IngestedItem, ItemStatus
+from .query_builder import build_query_variants
 from .search_local import search_local_news
 from .news_fetcher import search_google_news_multi_relaxed
 import urllib.parse, feedparser, re, datetime as _dt, time as _time
@@ -102,12 +103,22 @@ async def kickoff_campaign_ingest(campaign_id: str) -> None:
         since = datetime.utcnow() - timedelta(days=days_back)
         
         all_items: List[Dict[str, Any]] = []
-        # Paso 1: GN básico
-        gn = await _safe_search_google(q, lang, country, since, size)
-        all_items.extend(gn)
-        # Paso 2: Local (RSS abierto)
+
+        # Decide variantes de búsqueda: usa las persistidas si existen; si no, genera.
+        variants = campaign.search_variants or build_query_variants(q, city_keywords or [], None)
+
+        # Paso 1: GN básico por cada variante (cap para no exceder 10 variantes)
+        for v in variants[:10]:
+            gn = await _safe_search_google(v, lang, country, since, size)
+            all_items.extend(gn)
+
+        # Paso 2: Local (RSS abierto) por la consulta principal (actor) y primera variante
         ln = await _safe_search_local(q, city_keywords, lang, country, since, max(size, 35))
         all_items.extend(ln)
+        if variants:
+            ln2 = await _safe_search_local(variants[0], city_keywords, lang, country, since, max(size, 35))
+            all_items.extend(ln2)
+
         # Paso 3: GN relajado (aliases + city boost) si no alcanza
         if len(all_items) < size:
             try:

@@ -6,6 +6,7 @@ from ..db import get_session
 from ..models import Campaign
 from ..schemas import CampaignCreate, CampaignOut
 from ..deps import get_current_user
+from ..services.query_builder import build_query_variants
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
@@ -36,6 +37,13 @@ async def create_campaign(
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ):
+    # Genera variantes de búsqueda
+    variants = build_query_variants(
+        actor=payload.query,
+        city_keywords=payload.city_keywords or [],
+        extras=None,
+    )
+
     campaign = Campaign(
         name=payload.name,
         query=payload.query,
@@ -44,6 +52,7 @@ async def create_campaign(
         lang=payload.lang,
         country=payload.country,
         city_keywords=payload.city_keywords,
+        search_variants=variants,
         userId=current_user["id"],
         plan=getattr(payload, "plan", "BASIC"),
         autoEnabled=getattr(payload, "autoEnabled", True),

@@ -115,6 +115,11 @@ async def on_startup():
             'CREATE UNIQUE INDEX IF NOT EXISTS uq_source_campaign_url ON source_links ("campaignId", url)'
         )
 
+        # Columna opcional para variantes de búsqueda (idempotente)
+        await conn.exec_driver_sql(
+            'ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS search_variants JSONB'
+        )
+
     # Inicia jobs programados (alertas y campañas autoEnabled)
     try:
         await start_scheduler()

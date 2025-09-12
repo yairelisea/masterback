@@ -71,6 +71,9 @@ class Campaign(Base):
     autoLastReset: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     lastAutoRunAt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # Variantes de búsqueda generadas (lista de strings)
+    search_variants: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+
     userId: Mapped[str | None] = mapped_column(String(50), ForeignKey("users.id"))
     user = relationship("User")
 

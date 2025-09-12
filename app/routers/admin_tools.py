@@ -19,6 +19,7 @@ from ..schemas import (
 )
 from ..schemas import IngestedItemOut, AnalysisOut
 from sqlalchemy import func
+from sqlalchemy import text
 
 router = APIRouter(prefix="/admin", tags=["admin-tools"])
 
@@ -401,6 +402,27 @@ async def admin_campaign_overview(
             "last_created_at": last_analysis_at,
         },
     }
+
+
+@router.get("/campaigns/{campaign_id}/variants")
+async def admin_get_campaign_variants(
+    campaign_id: str,
+    _: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_session),
+):
+    # Lee variantes desde la DB (JSONB); si no hay, genera on-the-fly
+    row = (
+        await db.execute(text('SELECT search_variants, query, "city_keywords" FROM campaigns WHERE id = :cid'), {"cid": campaign_id})
+    ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    persisted, query, city_keywords = row
+    if persisted:
+        return {"campaignId": campaign_id, "query": query, "variants": persisted}
+    # fallback: genera variantes y no persiste
+    from ..services.query_builder import build_query_variants
+    variants = build_query_variants(actor=query or "", city_keywords=(city_keywords or []), extras=None)
+    return {"campaignId": campaign_id, "query": query, "variants": variants}
 
 
 # -----------------------------
