@@ -209,7 +209,7 @@ class AdHocSearchReq(BaseModel):
     city_keywords: Optional[List[str]] = None
     country: Optional[str] = "MX"
     lang: Optional[str] = "es-419"
-    days_back: int = Field(default=30, ge=1, le=60, description="Rango típico 1..60 días")
+    days_back: int = Field(default=30, ge=1, le=120, description="Rango típico 1..120 días")
     limit: int = Field(default=35, ge=1, le=50, description="Máximo 50 para evitar abuso")
     relaxed: bool = Field(default=False, description="Usa búsqueda relajada (aliases + boost) si true")
 

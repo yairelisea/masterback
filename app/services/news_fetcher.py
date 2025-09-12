@@ -129,9 +129,74 @@ async def _gn_fetch(queries: List[str], days_back: int, lang: str, country: str)
     return out
 
 
-async def _site_backfill(aliases: List[str], city_boost: List[str], days_back: int, lang: str, country: str) -> List[Dict[str, Any]]:
-    # Optional: hit specific local outlets with `site:` queries. Can return empty list safely.
-    return []
+async def _site_backfill(
+    aliases: List[str],
+    city_boost: List[str],
+    days_back: int,
+    lang: str,
+    country: str,
+) -> List[Dict[str, Any]]:
+    """
+    Backfill opcional por medios usando operador site: en Google News RSS.
+    No usa APIs de pago. Permite inyectar lista de sitios por env var BACKFILL_SITES
+    (coma-separada). Devuelve lista de dicts con llaves estándar.
+    """
+    import os
+
+    # Lista base (puedes ajustarla con BACKFILL_SITES="dom1,dom2,...")
+    sites_env = os.getenv("BACKFILL_SITES", "")
+    if sites_env.strip():
+        sites = [s.strip() for s in sites_env.split(",") if s.strip()]
+    else:
+        sites = [
+            "milenio.com",
+            "eluniversal.com.mx",
+            "elfinanciero.com.mx",
+            "proceso.com.mx",
+            "excelsior.com.mx",
+            "aristeguinoticias.com",
+            "debate.com.mx",
+            "animalpolitico.com",
+            # Agrega locales de Tamaulipas/CD. Madero si gustas
+            "expreso.press",
+            "elmercurio.com.mx",
+            "elmanana.com.mx",
+        ]
+
+    out: List[Dict[str, Any]] = []
+    # Construye consulta: alias (+ boost ciudad si hay) + site:
+    boosted_aliases: List[str] = []
+    if city_boost:
+        or_cities = " OR ".join([f'"{c}"' for c in city_boost])
+        boosted_aliases = [f'"{a}" ({or_cities})' for a in aliases]
+    else:
+        boosted_aliases = [f'"{a}"' for a in aliases]
+
+    # Limita combinaciones para no exceder el tiempo (máx 5 aliases x 6 sitios)
+    for alias in boosted_aliases[:5]:
+        for site in sites[:6]:
+            q = f"{alias} site:{site}"
+            try:
+                items = await fetch_news(
+                    q=q,
+                    size=10,
+                    days_back=days_back,
+                    lang=lang,
+                    country=country,
+                )
+                for it in items:
+                    out.append(
+                        {
+                            "title": it.title,
+                            "url": it.link,
+                            "summary": it.summary,
+                            "published_at": it.published_at,
+                            "source": it.source,
+                        }
+                    )
+            except Exception:
+                continue
+    return out
 
 
 def _dedupe(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
