@@ -627,8 +627,8 @@ async def admin_delete_campaign(
     _: dict = Depends(get_current_admin),
     db: AsyncSession = Depends(get_session),
 ):
-    camp = await db.get(Campaign, campaign_id)
-    if not camp:
+    exists = (await db.execute(text('SELECT 1 FROM campaigns WHERE id = :cid'), {"cid": campaign_id})).scalar()
+    if not exists:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
     # Borrado robusto con commits por etapa y manejo de rollback en errores
@@ -663,7 +663,7 @@ async def admin_delete_campaign(
         raise HTTPException(status_code=500, detail=f"delete sources failed: {e}")
 
     try:
-        await db.delete(camp)
+        res = await db.execute(text('DELETE FROM campaigns WHERE id = :cid'), {"cid": campaign_id})
         await db.commit()
     except Exception as e:
         try:
@@ -696,15 +696,16 @@ async def admin_purge_campaigns(
 
     for cid in ids:
         try:
-            camp = await db.get(Campaign, cid)
-            if not camp:
+            # Verifica existencia mínima
+            exists = (await db.execute(text('SELECT 1 FROM campaigns WHERE id = :cid'), {"cid": cid})).scalar()
+            if not exists:
                 errors.append({"id": cid, "detail": "not found"})
                 continue
             # Eliminar dependientes primero (raw SQL para evitar columnas inexistentes)
             await db.execute(text('DELETE FROM analyses WHERE "campaignId" = :cid'), {"cid": cid})
             await db.execute(text('DELETE FROM ingested_items WHERE "campaignId" = :cid'), {"cid": cid})
             await db.execute(text('DELETE FROM source_links WHERE "campaignId" = :cid'), {"cid": cid})
-            await db.delete(camp)
+            await db.execute(text('DELETE FROM campaigns WHERE id = :cid'), {"cid": cid})
             await db.commit()
             deleted.append(cid)
         except Exception as e:
