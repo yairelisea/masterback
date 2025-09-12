@@ -101,6 +101,10 @@ async def on_startup():
         await conn.run_sync(Base.metadata.create_all)
 
         # Índices/unique idempotentes (no fallan si ya existen)
+        # Campaigns: acelerar listados por usuario/orden
+        await conn.exec_driver_sql(
+            'CREATE INDEX IF NOT EXISTS idx_campaign_user_created ON campaigns ("userId", "createdAt")'
+        )
         await conn.exec_driver_sql(
             'CREATE INDEX IF NOT EXISTS idx_source_campaign_type ON source_links ("campaignId", type)'
         )
