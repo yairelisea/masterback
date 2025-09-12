@@ -34,8 +34,8 @@ class ItemStatusEnum(str, Enum):
 class CampaignCreate(BaseModel):
     name: str = Field(..., min_length=2, max_length=200)
     query: str = Field(..., min_length=1, max_length=300)
-    size: int = 25
-    days_back: int = Field(14, alias="days_back")
+    size: int = 35
+    days_back: int = Field(30, alias="days_back")
     lang: str = "es-419"
     country: str = "MX"
     city_keywords: Optional[List[str]] = None
@@ -97,8 +97,8 @@ class IngestCreate(BaseModel):
 
     # Parámetros ad-hoc (si no hay campaignId)
     q: Optional[str] = None
-    size: int = 25
-    days_back: int = Field(14, alias="days_back")
+    size: int = 35
+    days_back: int = Field(30, alias="days_back")
     lang: str = "es-419"
     country: str = "MX"
     city_keywords: Optional[List[str]] = None
@@ -175,8 +175,8 @@ class AIAnalysisResult(BaseModel):
 # =========================================================
 class NewsSearchParams(BaseModel):
     q: str
-    size: int = 25
-    days_back: int = Field(14, alias="days_back")
+    size: int = 35
+    days_back: int = Field(30, alias="days_back")
     lang: str = "es-419"
     country: str = "MX"
     city_keywords: Optional[List[str]] = None

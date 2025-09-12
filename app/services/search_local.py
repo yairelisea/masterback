@@ -159,8 +159,8 @@ async def search_local_news(
     city: Optional[str] = None,
     country: Optional[str] = None,
     lang: Optional[str] = None,
-    days_back: int = 7,
-    limit: int = 25,
+    days_back: int = 30,
+    limit: int = 35,
 ) -> List[Dict[str, Any]]:
     """
     Busca en RSS (Google/Bing), filtra por days_back y (si hay) city mention,

@@ -20,7 +20,7 @@ class RunSearchIn(BaseModel):
     query: str
     campaign_id: Optional[str] = None
     location: Optional[str] = None
-    limit: int = 25
+    limit: int = 35
 
 class RunSearchOut(BaseModel):
     inserted: int

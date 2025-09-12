@@ -123,8 +123,8 @@ async def recover_campaign_results(
             city=city or "",
             country=(getattr(camp, "country", None) or "MX"),
             lang=(getattr(camp, "lang", None) or "es-419"),
-            days_back=(getattr(camp, "days_back", None) or 14),
-            limit=(getattr(camp, "size", None) or 25),
+            days_back=(getattr(camp, "days_back", None) or 30),
+            limit=(getattr(camp, "size", None) or 35),
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"local search failed: {e}")
@@ -202,8 +202,8 @@ class AdHocSearchReq(BaseModel):
     city_keywords: Optional[List[str]] = None
     country: Optional[str] = "MX"
     lang: Optional[str] = "es-419"
-    days_back: int = Field(default=14, ge=1, le=60, description="Rango típico 1..60 días")
-    limit: int = Field(default=25, ge=1, le=50, description="Máximo 50 para evitar abuso")
+    days_back: int = Field(default=30, ge=1, le=60, description="Rango típico 1..60 días")
+    limit: int = Field(default=35, ge=1, le=50, description="Máximo 50 para evitar abuso")
 
 @router.post("", summary="Ad-hoc local search", tags=["search-local"])
 async def ad_hoc_search(

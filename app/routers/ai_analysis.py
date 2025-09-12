@@ -128,8 +128,8 @@ async def fetch_google_news(
 async def analyze_news(
     request: Request,
     q: str = Query(..., description="Consulta (ej. nombre del actor político)"),
-    size: int = Query(25, ge=1, le=100),
-    days_back: int = Query(14, ge=1, le=60),
+    size: int = Query(35, ge=1, le=100),
+    days_back: int = Query(30, ge=1, le=60),
     lang: str = Query("es-419"),
     country: str = Query("MX"),
     overall: bool = Query(True, description="Si true, devuelve resumen agregado"),

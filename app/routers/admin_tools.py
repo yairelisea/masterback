@@ -62,8 +62,8 @@ class AdminCampaignCreateIn(BaseModel):
     # name no fue listado, pero Campaign lo requiere; lo hacemos opcional con fallback.
     name: Optional[str] = None
     query: str
-    size: int = 25
-    days_back: int = Field(14, alias="days_back")
+    size: int = 35
+    days_back: int = Field(30, alias="days_back")
     lang: str = "es-419"
     country: str = "MX"
     city_keywords: Optional[list[str]] = None
