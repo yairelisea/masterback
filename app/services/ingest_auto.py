@@ -148,26 +148,7 @@ async def kickoff_campaign_ingest(campaign_id: str) -> None:
             bn = await _safe_search_bing(basic_q, since, size)
             all_items.extend(bn)
 
-        # Paso 2: Fallback GN relajado sólo si no alcanzamos (mantiene enfoque GN)
-        if len(all_items) < size:
-            try:
-                relaxed = await search_google_news_multi_relaxed(
-                    q=q,
-                    size=max(size, 35),
-                    days_back=days_back,
-                    lang=lang,
-                    country=country,
-                    city_keywords=city_keywords,
-                )
-                # map relaxed dicts to same shape
-                for it in relaxed:
-                    all_items.append({
-                        "title": it.get("title"),
-                        "url": it.get("url"),
-                        "publishedAt": it.get("published_at") or it.get("publishedAt"),
-                    })
-            except Exception:
-                pass
+        # Sin fallback: solo lo que haya en el mes (GN+Bing)
         
         # normalize to expected keys
         normed = []
@@ -183,7 +164,8 @@ async def kickoff_campaign_ingest(campaign_id: str) -> None:
                 "publishedAt": pub
             })
         
-        normed = _dedupe(normed)[: max(size, 35)]
+        # No intentamos llegar a una cuota: limitamos a 'size' y listo
+        normed = _dedupe(normed)[: size]
         
         for it in normed:
             await db.execute(
