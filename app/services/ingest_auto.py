@@ -4,7 +4,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from ..db import SessionLocal
@@ -145,13 +145,21 @@ async def kickoff_campaign_ingest(campaign_id: str) -> None:
         normed = _dedupe(normed)[: max(size, 35)]
         
         for it in normed:
-            db.add(IngestedItem(
-                campaignId=campaign.id,
-                title=it["title"],
-                url=it["url"],
-                publishedAt=it.get("publishedAt"),
-                status=None
-            ))
+            await db.execute(
+                text(
+                    'INSERT INTO ingested_items (id, "campaignId", title, url, "publishedAt", status, "createdAt")\n'
+                    'VALUES (:id, :campaignId, :title, :url, :publishedAt, :status, :createdAt)'
+                ),
+                {
+                    "id": str(uuid.uuid4()),
+                    "campaignId": campaign.id,
+                    "title": it["title"],
+                    "url": it["url"],
+                    "publishedAt": it.get("publishedAt"),
+                    "status": None,  # NULL = pendiente
+                    "createdAt": datetime.utcnow(),
+                },
+            )
         try:
             await db.commit()
         except SQLAlchemyError:

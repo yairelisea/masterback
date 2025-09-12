@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 from typing import Optional, List, Dict, Any, Union
+import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session, SessionLocal  # <- helpers
@@ -157,16 +158,21 @@ async def recover_campaign_results(
             published_at = None
 
         try:
-            new_item = IngestedItem(
-                campaignId=camp.id,
-                sourceId=None,
-                title=title,
-                url=url,
-                publishedAt=published_at,
-                status=ItemStatus.PENDING,
-                createdAt=now,
+            await session.execute(
+                text(
+                    'INSERT INTO ingested_items (id, "campaignId", title, url, "publishedAt", status, "createdAt")\n'
+                    'VALUES (:id, :campaignId, :title, :url, :publishedAt, :status, :createdAt)'
+                ),
+                {
+                    "id": str(uuid.uuid4()),
+                    "campaignId": camp.id,
+                    "title": title,
+                    "url": url,
+                    "publishedAt": published_at,
+                    "status": None,
+                    "createdAt": now,
+                },
             )
-            session.add(new_item)
             saved += 1
         except Exception as e:
             errors.append(str(e))
