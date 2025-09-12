@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import load_only
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -633,7 +633,7 @@ async def admin_delete_campaign(
 
     # Borrado robusto con commits por etapa y manejo de rollback en errores
     try:
-        await db.exec_driver_sql('DELETE FROM analyses WHERE "campaignId" = :cid', {"cid": campaign_id})
+        await db.execute(text('DELETE FROM analyses WHERE "campaignId" = :cid'), {"cid": campaign_id})
         await db.commit()
     except Exception as e:
         try:
@@ -643,7 +643,7 @@ async def admin_delete_campaign(
         raise HTTPException(status_code=500, detail=f"delete analyses failed: {e}")
 
     try:
-        await db.exec_driver_sql('DELETE FROM ingested_items WHERE "campaignId" = :cid', {"cid": campaign_id})
+        await db.execute(text('DELETE FROM ingested_items WHERE "campaignId" = :cid'), {"cid": campaign_id})
         await db.commit()
     except Exception as e:
         try:
@@ -653,7 +653,7 @@ async def admin_delete_campaign(
         raise HTTPException(status_code=500, detail=f"delete items failed: {e}")
 
     try:
-        await db.exec_driver_sql('DELETE FROM source_links WHERE "campaignId" = :cid', {"cid": campaign_id})
+        await db.execute(text('DELETE FROM source_links WHERE "campaignId" = :cid'), {"cid": campaign_id})
         await db.commit()
     except Exception as e:
         try:
@@ -701,9 +701,9 @@ async def admin_purge_campaigns(
                 errors.append({"id": cid, "detail": "not found"})
                 continue
             # Eliminar dependientes primero (raw SQL para evitar columnas inexistentes)
-            await db.exec_driver_sql('DELETE FROM analyses WHERE "campaignId" = :cid', {"cid": cid})
-            await db.exec_driver_sql('DELETE FROM ingested_items WHERE "campaignId" = :cid', {"cid": cid})
-            await db.exec_driver_sql('DELETE FROM source_links WHERE "campaignId" = :cid', {"cid": cid})
+            await db.execute(text('DELETE FROM analyses WHERE "campaignId" = :cid'), {"cid": cid})
+            await db.execute(text('DELETE FROM ingested_items WHERE "campaignId" = :cid'), {"cid": cid})
+            await db.execute(text('DELETE FROM source_links WHERE "campaignId" = :cid'), {"cid": cid})
             await db.delete(camp)
             await db.commit()
             deleted.append(cid)
