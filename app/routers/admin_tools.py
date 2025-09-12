@@ -631,12 +631,47 @@ async def admin_delete_campaign(
     if not camp:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    # Delete related rows first
-    await db.execute(delete(Analysis).where(Analysis.campaignId == campaign_id))
-    await db.execute(delete(IngestedItem).where(IngestedItem.campaignId == campaign_id))
-    await db.execute(delete(SourceLink).where(SourceLink.campaignId == campaign_id))
-    await db.delete(camp)
-    await db.commit()
+    # Borrado robusto con commits por etapa y manejo de rollback en errores
+    try:
+        await db.execute(delete(Analysis).where(Analysis.campaignId == campaign_id))
+        await db.commit()
+    except Exception as e:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"delete analyses failed: {e}")
+
+    try:
+        await db.execute(delete(IngestedItem).where(IngestedItem.campaignId == campaign_id))
+        await db.commit()
+    except Exception as e:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"delete items failed: {e}")
+
+    try:
+        await db.execute(delete(SourceLink).where(SourceLink.campaignId == campaign_id))
+        await db.commit()
+    except Exception as e:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"delete sources failed: {e}")
+
+    try:
+        await db.delete(camp)
+        await db.commit()
+    except Exception as e:
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"delete campaign failed: {e}")
+
     return {"deleted": True, "campaignId": campaign_id}
 
 
