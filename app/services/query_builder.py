@@ -39,14 +39,8 @@ def build_query_variants(
     extras: Optional[Iterable[str]] = None,
 ) -> List[str]:
     """
-    Devuelve variantes de búsqueda combinando:
-    - Nombre exacto
-    - Nombre + cargos típicos
-    - Nombre + partidos
-    - Nombre + ciudades/estados
-    - Combinaciones con cargos/partidos + ciudad
-    - Extras provistos por el usuario, opcionalmente combinados con ciudad
-    Quita duplicados y ordena por longitud ascendente (más precisos primero).
+    Devuelve variantes de búsqueda con priorización para
+    "actor + ciudad + puesto" como las primeras opciones.
     """
     a = (actor or "").strip()
     if not a:
@@ -55,37 +49,57 @@ def build_query_variants(
     cities = _norm_list(city_keywords)
     extra_words = _norm_list(extras)
 
-    variants: set[str] = set()
+    ordered: List[str] = []
+    seen: set[str] = set()
 
-    # Base: nombre en varias formas
-    variants.add(a)
-    variants.add(f'"{a}"')
+    def add(s: str):
+        s2 = s.strip()
+        if not s2:
+            return
+        if s2 not in seen:
+            seen.add(s2)
+            ordered.append(s2)
 
-    # Nombre + roles
-    for r in ROLE_KEYWORDS:
-        variants.add(f"{a} {r}")
-    # Nombre + partidos
-    for p in PARTY_KEYWORDS:
-        variants.add(f"{a} {p}")
-
-    # Nombre + ciudades
+    # 1) Prioridad: actor + rol + ciudad
     for c in cities:
-        variants.add(f"{a} {c}")
         for r in ROLE_KEYWORDS:
-            variants.add(f"{a} {r} {c}")
+            add(f'{a} {r} {c}')
+            add(f'"{a}" {r} {c}')
+
+    # 2) actor + partido + ciudad
+    for c in cities:
         for p in PARTY_KEYWORDS:
-            variants.add(f"{a} {p} {c}")
+            add(f'{a} {p} {c}')
+            add(f'"{a}" {p} {c}')
 
-    # Extras
+    # 3) actor + ciudad
+    for c in cities:
+        add(f'{a} {c}')
+        add(f'"{a}" {c}')
+
+    # 4) actor + rol (sin ciudad)
+    for r in ROLE_KEYWORDS:
+        add(f'{a} {r}')
+        add(f'"{a}" {r}')
+
+    # 5) actor + partido (sin ciudad)
+    for p in PARTY_KEYWORDS:
+        add(f'{a} {p}')
+        add(f'"{a}" {p}')
+
+    # 6) extras (y extras + ciudad)
     for x in extra_words:
-        variants.add(f"{a} {x}")
+        add(f'{a} {x}')
+        add(f'"{a}" {x}')
         for c in cities:
-            variants.add(f"{a} {x} {c}")
+            add(f'{a} {x} {c}')
+            add(f'"{a}" {x} {c}')
 
-    # Ordena por longitud (más cortas primero) y quita duplicados conservando orden
-    ordered = sorted(variants, key=lambda s: (len(s), s.lower()))
+    # 7) base
+    add(a)
+    add(f'"{a}"')
+
     return ordered
 
 
 __all__ = ["build_query_variants"]
-

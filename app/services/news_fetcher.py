@@ -7,7 +7,11 @@ from .query_expand import expand_actor
 from .rank import score_item
 
 def build_google_news_rss(query: str, lang: str = "es-419", country: str = "MX") -> str:
-    q = f"\"{query}\""
+    # No fuerces comillas si el query ya trae operadores (OR, site:, paréntesis o comillas)
+    q = (query or "").strip()
+    if not any(op in q for op in ['"', ' OR ', 'site:', '(', ')']):
+        # En queries simples, protege el actor con comillas
+        q = f'"{q}"'
     params = {"q": q, "hl": lang, "gl": country, "ceid": f"{country}:{lang}"}
     return "https://news.google.com/rss/search?" + urllib.parse.urlencode(params)
 
