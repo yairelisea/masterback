@@ -76,13 +76,13 @@ async def create_campaign(
 @router.get("/{campaign_id}", response_model=CampaignOut)
 async def get_campaign(
     campaign_id: str,
-    x_user_id: str | None = Header(default=None),
-    x_admin: str | None = Header(default=None),
+    current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ):
     c = await db.get(Campaign, campaign_id)
     if not c:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    if not (x_admin == "true" or (x_user_id and x_user_id == c.userId)):
+    # Permite ver si es dueño o admin
+    if (current_user.get("role") != "admin") and (c.userId != current_user.get("id")):
         raise HTTPException(status_code=403, detail="Forbidden")
     return _to_out(c)
