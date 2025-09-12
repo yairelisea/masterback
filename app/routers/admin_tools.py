@@ -553,10 +553,10 @@ async def admin_report_campaign(
 import asyncio
 
 async def _run_all_pipeline(campaign_id: str) -> None:
-    # 1) Recover local news and persist as PENDING
+    # 1) Ingest via combined pipeline (Google News + Local) and persist as PENDING
     try:
-        from .search_local import _recover_campaign_results_task
-        await _recover_campaign_results_task(campaign_id)
+        from ..services.ingest_auto import kickoff_campaign_ingest
+        await kickoff_campaign_ingest(campaign_id)
     except Exception:
         # continue; best-effort
         pass
@@ -606,3 +606,33 @@ async def admin_run_all(
     # Always background to avoid client/proxy timeouts
     asyncio.create_task(_run_all_pipeline(campaign_id))
     return {"accepted": True, "campaignId": campaign_id, "mode": "async"}
+
+
+@router.post("/campaigns/{campaign_id}/ingest")
+async def admin_ingest_only(
+    campaign_id: str,
+    _: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_session),
+):
+    camp = await db.get(Campaign, campaign_id)
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    try:
+        from ..services.ingest_auto import kickoff_campaign_ingest
+        await kickoff_campaign_ingest(campaign_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ingest failed: {e}")
+
+    # Return quick counts
+    from sqlalchemy import func
+    total_items = (
+        await db.execute(select(func.count()).select_from(IngestedItem).where(IngestedItem.campaignId == campaign_id))
+    ).scalar_one()
+    pending = (
+        await db.execute(
+            select(func.count()).select_from(IngestedItem).where(
+                IngestedItem.campaignId == campaign_id, IngestedItem.status == ItemStatus.PENDING
+            )
+        )
+    ).scalar_one()
+    return {"ok": True, "campaignId": campaign_id, "items_total": int(total_items), "pending": int(pending)}
