@@ -156,6 +156,12 @@ async def campaign_tick():
                 continue
             # Fire and update counters
             await kickoff_campaign_ingest(c.id)
+            try:
+                # Procesa pendientes apenas se ingesta
+                from .routers.analyses_extra import process_pending as _process_pending
+                await _process_pending(campaignId=c.id, limit=200, db=session)  # type: ignore
+            except Exception:
+                pass
             c.autoRunsToday = (c.autoRunsToday or 0) + 1
             c.lastAutoRunAt = now
         await session.commit()

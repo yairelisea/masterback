@@ -47,8 +47,31 @@ async def _safe_search_google(q: str, lang: str, country: str, since: datetime, 
 
 async def _safe_search_local(q: str, city_keywords: Optional[list[str]], lang: str, country: str, since: datetime, size: int) -> List[Dict[str, Any]]:
     try:
-        items = await search_local_news(q=q, city_keywords=city_keywords, lang=lang, country=country, since=since, limit=size)
-        return items or []
+        # Coerce list of city keywords into a single hint string
+        city = None
+        if city_keywords:
+            try:
+                city = " ".join([str(x) for x in city_keywords if isinstance(x, (str, int, float))])
+            except Exception:
+                city = str(city_keywords[0])
+        days_back = max(1, int((datetime.utcnow() - since).days or 1))
+        items = await search_local_news(
+            query=q,
+            city=city or "",
+            country=country,
+            lang=lang,
+            days_back=days_back,
+            limit=size,
+        )
+        # Map to expected keys for downstream
+        out: List[Dict[str, Any]] = []
+        for it in items:
+            out.append({
+                "title": it.get("title"),
+                "url": it.get("url"),
+                "publishedAt": it.get("published_at") or it.get("publishedAt"),
+            })
+        return out
     except Exception:
         return []
 

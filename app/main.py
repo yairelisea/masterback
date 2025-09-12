@@ -114,3 +114,12 @@ async def on_startup():
         await conn.exec_driver_sql(
             'CREATE UNIQUE INDEX IF NOT EXISTS uq_source_campaign_url ON source_links ("campaignId", url)'
         )
+
+    # Inicia jobs programados (alertas y campañas autoEnabled)
+    try:
+        await start_scheduler()
+        from .scheduler import schedule_campaigns
+        await schedule_campaigns()
+    except Exception:
+        # Scheduler es best-effort; no bloquea el arranque si falla
+        pass
