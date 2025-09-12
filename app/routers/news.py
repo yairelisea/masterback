@@ -6,7 +6,7 @@ import httpx, urllib.parse, time, datetime
 import feedparser
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from ..db import get_session
 from .. import models
@@ -39,6 +39,15 @@ def build_google_news_rss(query: str, lang: str = "es-419", country: str = "MX")
         "ceid": f"{country}:{lang}"
     }
     return "https://news.google.com/rss/search?" + urllib.parse.urlencode(params)
+
+def build_google_news_topic_rss(topic_id: str, lang: str = "es-419", country: str = "MX") -> str:
+    """
+    Construye URL RSS para un Topic de Google News.
+    Ejemplo: https://news.google.com/rss/topics/<topic_id>?hl=es-419&gl=MX&ceid=MX:es-419
+    """
+    base = f"https://news.google.com/rss/topics/{urllib.parse.quote(topic_id)}"
+    params = {"hl": lang, "gl": country, "ceid": f"{country}:{lang}"}
+    return base + "?" + urllib.parse.urlencode(params)
 
 def _to_dt(struct_time) -> Optional[datetime.datetime]:
     """
@@ -163,3 +172,88 @@ async def search_news(
             await session.commit()
 
     return NewsResponse(query=q, total=len(items), items=items)
+
+
+@router.get("/topic", response_model=NewsResponse)
+async def search_news_by_topic(
+    topic_id: str = Query(..., min_length=8, description="ID del tópico de Google News"),
+    lang: str = Query("es-419"),
+    country: str = Query("MX"),
+    size: int = Query(35, ge=1, le=100),
+    days_back: int = Query(30, ge=1, le=120),
+    campaignId: Optional[str] = Query(None),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Obtiene notas recientes de un Topic de Google News y (opcionalmente) las persiste en una campaña.
+    """
+    rss_url = build_google_news_topic_rss(topic_id, lang=lang, country=country)
+
+    # Descargar y parsear RSS
+    async with httpx.AsyncClient(timeout=12) as client:
+        resp = await client.get(rss_url)
+        if resp.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"Error Google News Topic RSS ({resp.status_code})")
+
+    feed = feedparser.parse(resp.content)
+    if feed.bozo:
+        raise HTTPException(status_code=502, detail="No se pudo parsear el feed del Topic")
+
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days_back)
+
+    collected: List[NewsItem] = []
+    for entry in feed.entries:
+        title = getattr(entry, "title", "").strip()
+        link = clean_link(getattr(entry, "link", "").strip())
+        summary = getattr(entry, "summary", None)
+        source = None
+        try:
+            source = entry.source.title  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        published_at = _to_dt(getattr(entry, "published_parsed", None))
+        if published_at and published_at < cutoff:
+            continue
+        if title and link:
+            collected.append(NewsItem(title=title, link=link, source=source, published_at=published_at, summary=summary))
+
+    items = collected[:size]
+
+    # Persistencia opcional, con dedupe por (campaignId,url) sin usar columnas no existentes
+    if campaignId and items:
+        cres = await session.execute(select(models.Campaign).where(models.Campaign.id == campaignId))
+        if not cres.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="campaignId no existe")
+        saved = 0
+        now = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
+        import uuid as _uuid
+        for it in items:
+            try:
+                dup = await session.execute(
+                    text('SELECT 1 FROM ingested_items WHERE "campaignId" = :cid AND url = :url LIMIT 1'),
+                    {"cid": campaignId, "url": it.link},
+                )
+                if dup.first():
+                    continue
+            except Exception:
+                pass
+            await session.execute(
+                text(
+                    'INSERT INTO ingested_items (id, "campaignId", title, url, "publishedAt", status, "createdAt")\n'
+                    'VALUES (:id, :campaignId, :title, :url, :publishedAt, :status, :createdAt)'
+                ),
+                {
+                    "id": str(_uuid.uuid4()),
+                    "campaignId": campaignId,
+                    "title": it.title,
+                    "url": it.link,
+                    "publishedAt": it.published_at,
+                    "status": None,
+                    "createdAt": now,
+                },
+            )
+            saved += 1
+        if saved:
+            await session.commit()
+
+    return NewsResponse(query=topic_id, total=len(items), items=items)
