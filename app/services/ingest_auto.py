@@ -98,7 +98,8 @@ async def kickoff_campaign_ingest(campaign_id: str) -> None:
         lang = campaign.lang or "es-419"
         country = campaign.country or "MX"
         size = campaign.size or 25
-        days_back = campaign.days_back or 14
+        # Pausamos búsqueda local y fijamos ventana a 30 días (1 mes)
+        days_back = 30
         city_keywords = campaign.city_keywords or None
         since = datetime.utcnow() - timedelta(days=days_back)
         
@@ -112,14 +113,7 @@ async def kickoff_campaign_ingest(campaign_id: str) -> None:
             gn = await _safe_search_google(v, lang, country, since, size)
             all_items.extend(gn)
 
-        # Paso 2: Local (RSS abierto) por la consulta principal (actor) y primera variante
-        ln = await _safe_search_local(q, city_keywords, lang, country, since, max(size, 35))
-        all_items.extend(ln)
-        if variants:
-            ln2 = await _safe_search_local(variants[0], city_keywords, lang, country, since, max(size, 35))
-            all_items.extend(ln2)
-
-        # Paso 3: GN relajado (aliases + city boost) si no alcanza
+        # Paso 2: GN relajado (aliases + city boost) + backfill por medios, si no alcanza
         if len(all_items) < size:
             try:
                 relaxed = await search_google_news_multi_relaxed(
