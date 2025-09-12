@@ -140,14 +140,17 @@ async def recover_campaign_results(
         if not url or not title:
             continue
 
-        dup_check = await session.execute(
-            select(IngestedItem).where(
-                IngestedItem.campaignId == camp.id,
-                IngestedItem.url == url,
+        # Dedupe seguro: evita seleccionar columnas inexistentes en DB
+        try:
+            dup = await session.execute(
+                text('SELECT 1 FROM ingested_items WHERE "campaignId" = :cid AND url = :url LIMIT 1'),
+                {"cid": camp.id, "url": url},
             )
-        )
-        if dup_check.scalars().first():
-            continue
+            if dup.first():
+                continue
+        except Exception:
+            # Si la comprobación falla por esquema, asumimos no duplicado
+            pass
 
         published_at = None
         try:

@@ -2,6 +2,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.orm import load_only
 from typing import Optional, List
 
 from ..db import get_session
@@ -14,7 +15,11 @@ router = APIRouter(prefix="/analyses", tags=["analyses"])
 @router.post("/process_pending")
 async def process_pending(campaignId: Optional[str] = None, limit: int = 200, db: AsyncSession = Depends(get_session)):
     # Procesa solo items con status NULL (compatible con DB antigua sin 'PENDING')
-    q = select(IngestedItem).where(IngestedItem.status == None)  # noqa: E711
+    q = (
+        select(IngestedItem)
+        .options(load_only(IngestedItem.id, IngestedItem.campaignId, IngestedItem.title, IngestedItem.status))
+        .where(IngestedItem.status == None)  # noqa: E711
+    )
     if campaignId:
         q = q.where(IngestedItem.campaignId == campaignId)
     rows: List[IngestedItem] = (await db.execute(q)).scalars().all()
