@@ -29,6 +29,25 @@ async def _safe_pipeline(token: str, campaign_id: str):
     except Exception:
         pass
 
+
+# -------- Unificar búsqueda/proceso para usuario (refresh) --------
+from ..db import SessionLocal
+from ..services.ingest_auto import kickoff_campaign_ingest
+
+async def _refresh_campaign_task(campaign_id: str):
+    try:
+        # 1) Ingesta GN+Bing (30 días) sin buscar cuota
+        await kickoff_campaign_ingest(campaign_id)
+    except Exception:
+        pass
+    # 2) Analiza pendientes
+    try:
+        async with SessionLocal() as db:
+            from .analyses_extra import process_pending as _process_pending
+            await _process_pending(campaignId=campaign_id, limit=200, db=db)  # type: ignore
+    except Exception:
+        pass
+
 @router.post("", response_model=CampaignOut)
 async def create_campaign(
     request: Request,
@@ -133,3 +152,23 @@ async def campaign_overview(
         "items": {"total": total_items, "by_status": counts, "last_created_at": last_item_at},
         "analyses": {"total": int(analyses_count), "last_created_at": last_analysis_at},
     }
+
+
+@router.post("/{campaign_id}/refresh")
+async def refresh_campaign(
+    campaign_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Unificado: dispara ingesta (GN+Bing 30 días) + análisis en background.
+    Permite al dueño de la campaña o admin. Responde inmediato.
+    """
+    c = await db.get(Campaign, campaign_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if (current_user.get("role") != "admin") and (c.userId != current_user.get("id")):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    background_tasks.add_task(_refresh_campaign_task, campaign_id)
+    return {"accepted": True, "campaignId": campaign_id, "mode": "async"}
