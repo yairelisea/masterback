@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.orm import load_only
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session, SessionLocal
@@ -326,6 +327,21 @@ async def admin_list_campaign_analyses(
     order_by = order_col.desc() if str(dir).lower() == "desc" else order_col.asc()
     q = (
         select(Analysis)
+        .options(
+            load_only(
+                Analysis.id,
+                Analysis.campaignId,
+                Analysis.itemId,
+                Analysis.sentiment,
+                Analysis.tone,
+                Analysis.topics,
+                Analysis.summary,
+                Analysis.entities,
+                Analysis.stance,
+                Analysis.perception,
+                Analysis.createdAt,
+            )
+        )
         .where(Analysis.campaignId == campaign_id)
         .order_by(order_by)
         .offset(offset)
@@ -445,18 +461,46 @@ async def admin_report_campaign(
         raise HTTPException(status_code=404, detail="Campaign not found")
 
     # Construye un payload sencillo de análisis con últimos items/analyses
-    q = (
-        select(Analysis, IngestedItem)
-        .outerjoin(IngestedItem, IngestedItem.id == Analysis.itemId)
+    # Fetch latest analyses (only compatible columns), then fetch related items separately
+    q_an = (
+        select(Analysis)
+        .options(
+            load_only(
+                Analysis.id,
+                Analysis.campaignId,
+                Analysis.itemId,
+                Analysis.sentiment,
+                Analysis.tone,
+                Analysis.topics,
+                Analysis.summary,
+                Analysis.entities,
+                Analysis.stance,
+                Analysis.perception,
+                Analysis.createdAt,
+            )
+        )
         .where(Analysis.campaignId == campaign_id)
         .order_by(Analysis.createdAt.desc())
         .limit(50)
     )
-    pairs = (await db.execute(q)).all()
+    analyses_rows = (await db.execute(q_an)).scalars().all()
+
+    item_ids = [a.itemId for a in analyses_rows if a.itemId]
+    items_by_id: dict[str, IngestedItem] = {}
+    if item_ids:
+        q_items = (
+            select(IngestedItem)
+            .options(load_only(IngestedItem.id, IngestedItem.title, IngestedItem.url))
+            .where(IngestedItem.id.in_(item_ids))
+        )
+        items_rows = (await db.execute(q_items)).scalars().all()
+        items_by_id = {it.id: it for it in items_rows}
+
     items: list[dict] = []
     sentiments: list[float] = []
     topics: list[str] = []
-    for a, it in pairs:
+    for a in analyses_rows:
+        it = items_by_id.get(a.itemId) if a.itemId else None
         title = (it.title if it else None) or (a.summary or "")
         url = (it.url if it else None)
         if a.sentiment is not None:

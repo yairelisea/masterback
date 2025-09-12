@@ -1,6 +1,7 @@
 from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
+from sqlalchemy.orm import load_only
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_session
 from ..deps import get_current_user
@@ -42,6 +43,21 @@ async def list_analyses(
     await _ensure_owner(campaign_id, current_user, db)
     q = (
         select(Analysis)
+        .options(
+            load_only(
+                Analysis.id,
+                Analysis.campaignId,
+                Analysis.itemId,
+                Analysis.sentiment,
+                Analysis.tone,
+                Analysis.topics,
+                Analysis.summary,
+                Analysis.entities,
+                Analysis.stance,
+                Analysis.perception,
+                Analysis.createdAt,
+            )
+        )
         .where(Analysis.campaignId == campaign_id)
         .order_by(Analysis.createdAt.desc())
         .limit(500)
