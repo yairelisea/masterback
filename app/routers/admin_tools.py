@@ -650,15 +650,33 @@ async def admin_purge_campaigns(
     _: dict = Depends(get_current_admin),
     db: AsyncSession = Depends(get_session),
 ):
-    deleted = []
-    for cid in payload.ids:
-        camp = await db.get(Campaign, cid)
-        if not camp:
-            continue
-        await db.execute(delete(Analysis).where(Analysis.campaignId == cid))
-        await db.execute(delete(IngestedItem).where(IngestedItem.campaignId == cid))
-        await db.execute(delete(SourceLink).where(SourceLink.campaignId == cid))
-        await db.delete(camp)
-        deleted.append(cid)
-    await db.commit()
-    return {"deleted": deleted}
+    # Si no vienen IDs, intenta purgar todas las campañas
+    ids = payload.ids or []
+    if not ids:
+        rows = (await db.execute(select(Campaign.id))).scalars().all()
+        ids = list(rows)
+
+    deleted: list[str] = []
+    errors: list[dict] = []
+
+    for cid in ids:
+        try:
+            camp = await db.get(Campaign, cid)
+            if not camp:
+                errors.append({"id": cid, "detail": "not found"})
+                continue
+            # Eliminar dependientes primero
+            await db.execute(delete(Analysis).where(Analysis.campaignId == cid))
+            await db.execute(delete(IngestedItem).where(IngestedItem.campaignId == cid))
+            await db.execute(delete(SourceLink).where(SourceLink.campaignId == cid))
+            await db.delete(camp)
+            await db.commit()
+            deleted.append(cid)
+        except Exception as e:
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+            errors.append({"id": cid, "detail": str(e)})
+
+    return {"deleted": deleted, "errors": errors}
