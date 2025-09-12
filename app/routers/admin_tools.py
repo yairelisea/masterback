@@ -623,16 +623,17 @@ async def admin_ingest_only(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"ingest failed: {e}")
 
-    # Return quick counts
+    # Return quick counts (grouped to avoid enum literal binding issues)
     from sqlalchemy import func
     total_items = (
         await db.execute(select(func.count()).select_from(IngestedItem).where(IngestedItem.campaignId == campaign_id))
     ).scalar_one()
-    pending = (
+    by_rows = (
         await db.execute(
-            select(func.count()).select_from(IngestedItem).where(
-                IngestedItem.campaignId == campaign_id, IngestedItem.status == ItemStatus.PENDING
-            )
+            select(IngestedItem.status, func.count())
+            .where(IngestedItem.campaignId == campaign_id)
+            .group_by(IngestedItem.status)
         )
-    ).scalar_one()
-    return {"ok": True, "campaignId": campaign_id, "items_total": int(total_items), "pending": int(pending)}
+    ).all()
+    by_status = {str(s[0].value if s[0] is not None else "NONE"): int(s[1]) for s in by_rows}
+    return {"ok": True, "campaignId": campaign_id, "items_total": int(total_items), "by_status": by_status}
