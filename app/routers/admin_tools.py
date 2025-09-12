@@ -404,6 +404,127 @@ async def admin_campaign_overview(
     }
 
 
+@router.post("/campaigns/{campaign_id}/ensure")
+async def admin_ensure_min_results(
+    campaign_id: str,
+    min_results: int = 15,
+    max_days_back: int = 90,
+    _: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Asegura al menos `min_results` ítems para la campaña, degradando recall:
+    - Intenta ingest estándar (GN+Bing) a 30 días
+    - Si falta, intenta modo relajado a 60 y 90 días (sin ciudad si aún falta)
+    Inserta por URL (dedupe) y devuelve conteos por capa.
+    """
+    camp = await db.get(Campaign, campaign_id)
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    from ..services.ingest_auto import kickoff_campaign_ingest
+    from ..services.news_fetcher import search_google_news_multi_relaxed
+    import uuid as _uuid
+    from datetime import datetime, timezone
+
+    async def _count_items() -> int:
+        return int((await db.execute(
+            select(func.count()).select_from(IngestedItem).where(IngestedItem.campaignId == campaign_id)
+        )).scalar_one())
+
+    async def _insert_batch(items: list[dict]) -> int:
+        if not items:
+            return 0
+        now = datetime.utcnow().replace(tzinfo=timezone.utc)
+        inserted = 0
+        for it in items:
+            title = (it.get("title") or "").strip()
+            url = (it.get("url") or "").strip()
+            pub = it.get("published_at") or it.get("publishedAt")
+            if not (title and url):
+                continue
+            try:
+                dup = await db.execute(
+                    text('SELECT 1 FROM ingested_items WHERE "campaignId" = :cid AND url = :u LIMIT 1'),
+                    {"cid": campaign_id, "u": url},
+                )
+                if dup.first():
+                    continue
+            except Exception:
+                pass
+            await db.execute(
+                text(
+                    'INSERT INTO ingested_items (id, "campaignId", title, url, "publishedAt", status, "createdAt")\n'
+                    'VALUES (:id, :cid, :t, :u, :p, :s, :c)'
+                ),
+                {
+                    "id": str(_uuid.uuid4()),
+                    "cid": campaign_id,
+                    "t": title[:512],
+                    "u": url,
+                    "p": pub,
+                    "s": None,
+                    "c": now,
+                },
+            )
+            inserted += 1
+        if inserted:
+            await db.commit()
+        return inserted
+
+    report: dict = {"attempts": [], "final_total": 0}
+
+    # Capa 1: ingest estándar (30 días)
+    try:
+        await kickoff_campaign_ingest(campaign_id)
+    except Exception:
+        pass
+    total = await _count_items()
+    report["attempts"].append({"layer": "ingest_30d", "total_after": total})
+    if total >= min_results:
+        report["final_total"] = total
+        return report
+
+    # Capa 2: relajado 60 días (con ciudad)
+    try:
+        rel60 = await search_google_news_multi_relaxed(
+            q=camp.query,
+            size=50,
+            days_back=min(60, max_days_back),
+            lang=camp.lang or "es-419",
+            country=camp.country or "MX",
+            city_keywords=camp.city_keywords or None,
+        )
+        ins60 = await _insert_batch(rel60)
+    except Exception:
+        ins60 = 0
+    total = await _count_items()
+    report["attempts"].append({"layer": "relaxed_60d", "inserted": ins60, "total_after": total})
+    if total >= min_results:
+        report["final_total"] = total
+        return report
+
+    # Capa 3: relajado 90 días (sin ciudad)
+    if max_days_back >= 90:
+        try:
+            rel90 = await search_google_news_multi_relaxed(
+                q=camp.query,
+                size=50,
+                days_back=90,
+                lang=camp.lang or "es-419",
+                country=camp.country or "MX",
+                city_keywords=None,
+            )
+            ins90 = await _insert_batch(rel90)
+        except Exception:
+            ins90 = 0
+        total = await _count_items()
+        report["attempts"].append({"layer": "relaxed_90d", "inserted": ins90, "total_after": total})
+
+    report["final_total"] = total
+    return report
+
+
 @router.get("/campaigns/{campaign_id}/variants")
 async def admin_get_campaign_variants(
     campaign_id: str,
