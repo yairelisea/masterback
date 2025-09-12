@@ -102,10 +102,31 @@ async def fetch_news(
 # New relaxed multi-query search helpers
 async def _gn_fetch(queries: List[str], days_back: int, lang: str, country: str) -> List[Dict[str, Any]]:
     """
-    Placeholder that should be wired to an implementation that returns a list of dicts
-    with keys like 'title', 'url', 'summary', 'published_at', 'source', etc.
+    Ejecuta fetch_news para cada query y devuelve lista de dicts
+    compatibles con el pipeline: {title, url, summary, published_at, source}.
     """
-    raise NotImplementedError("Wire this to your existing Google News fetcher (same signature).")
+    out: List[Dict[str, Any]] = []
+    for q in queries:
+        try:
+            items = await fetch_news(
+                q,
+                size=35,
+                days_back=days_back,
+                lang=lang,
+                country=country,
+                city_keywords=None,
+            )
+            for it in items:
+                out.append({
+                    "title": it.title,
+                    "url": it.link,
+                    "summary": it.summary,
+                    "published_at": it.published_at,
+                    "source": it.source,
+                })
+        except Exception:
+            continue
+    return out
 
 
 async def _site_backfill(aliases: List[str], city_boost: List[str], days_back: int, lang: str, country: str) -> List[Dict[str, Any]]:
@@ -181,4 +202,3 @@ async def search_google_news_multi_relaxed(
     ranked = [it for _, it in scored]
 
     return ranked[:size]
-

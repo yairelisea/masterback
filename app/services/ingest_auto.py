@@ -10,6 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from ..db import SessionLocal
 from ..models import Campaign, IngestedItem, ItemStatus
 from .search_local import search_local_news
+from .news_fetcher import search_google_news_multi_relaxed
 import urllib.parse, feedparser, re, datetime as _dt, time as _time
 
 async def _google_news_fetch(q: str, lang: str, country: str, since: _dt.datetime, limit: int):
@@ -100,10 +101,32 @@ async def kickoff_campaign_ingest(campaign_id: str) -> None:
         since = datetime.utcnow() - timedelta(days=days_back)
         
         all_items: List[Dict[str, Any]] = []
+        # Paso 1: GN básico
         gn = await _safe_search_google(q, lang, country, since, size)
         all_items.extend(gn)
-        ln = await _safe_search_local(q, city_keywords, lang, country, since, max(size, 30))
+        # Paso 2: Local (RSS abierto)
+        ln = await _safe_search_local(q, city_keywords, lang, country, since, max(size, 35))
         all_items.extend(ln)
+        # Paso 3: GN relajado (aliases + city boost) si no alcanza
+        if len(all_items) < size:
+            try:
+                relaxed = await search_google_news_multi_relaxed(
+                    q=q,
+                    size=max(size, 35),
+                    days_back=days_back,
+                    lang=lang,
+                    country=country,
+                    city_keywords=city_keywords,
+                )
+                # map relaxed dicts to same shape
+                for it in relaxed:
+                    all_items.append({
+                        "title": it.get("title"),
+                        "url": it.get("url"),
+                        "publishedAt": it.get("published_at") or it.get("publishedAt"),
+                    })
+            except Exception:
+                pass
         
         # normalize to expected keys
         normed = []
@@ -119,7 +142,7 @@ async def kickoff_campaign_ingest(campaign_id: str) -> None:
                 "publishedAt": pub
             })
         
-        normed = _dedupe(normed)[: max(size, 30)]
+        normed = _dedupe(normed)[: max(size, 35)]
         
         for it in normed:
             db.add(IngestedItem(
