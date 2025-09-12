@@ -56,7 +56,13 @@ async def fetch_news(
     y (opcional) por palabras clave de ciudad/localidad.
     """
     rss_url = build_google_news_rss(q, lang=lang, country=country)
-    async with httpx.AsyncClient(timeout=15) as client:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127 Safari/537.36",
+        "Accept": "application/rss+xml, application/xml;q=0.9, */*;q=0.8",
+        "Accept-Language": f"{lang},es;q=0.9,en;q=0.6",
+        "Cache-Control": "no-cache",
+    }
+    async with httpx.AsyncClient(timeout=20, headers=headers, follow_redirects=True) as client:
         resp = await client.get(rss_url)
         resp.raise_for_status()
 
