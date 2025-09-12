@@ -198,6 +198,7 @@ async def recover_campaign_results(
 
 # Endpoint opcional para probar búsquedas sin campaña
 from pydantic import BaseModel, Field
+from app.services.news_fetcher import search_google_news_multi_relaxed
 
 # --- Ad-hoc search (sin campaña) ---
 # Permite probar la búsqueda local sin tocar DB.
@@ -210,6 +211,7 @@ class AdHocSearchReq(BaseModel):
     lang: Optional[str] = "es-419"
     days_back: int = Field(default=30, ge=1, le=60, description="Rango típico 1..60 días")
     limit: int = Field(default=35, ge=1, le=50, description="Máximo 50 para evitar abuso")
+    relaxed: bool = Field(default=False, description="Usa búsqueda relajada (aliases + boost) si true")
 
 @router.post("", summary="Ad-hoc local search", tags=["search-local"])
 async def ad_hoc_search(
@@ -230,19 +232,42 @@ async def ad_hoc_search(
         elif body.city_keywords:
             city_val = " ".join([str(x) for x in body.city_keywords if isinstance(x, (str, int, float))])
 
-        items = await search_local_news(
-            query=body.query,
-            city=(city_val or ""),
-            country=body.country or "MX",
-            lang=body.lang or "es-419",
-            days_back=body.days_back,
-            limit=body.limit,
-        )
+        if body.relaxed:
+            # Usa buscador relajado (aliases + boost). No persiste.
+            raw = await search_google_news_multi_relaxed(
+                q=body.query,
+                size=min(body.limit, 50),
+                days_back=body.days_back,
+                lang=body.lang or "es-419",
+                country=body.country or "MX",
+                city_keywords=(body.city_keywords or ([city_val] if city_val else None)),
+            )
+            # Normaliza a la misma salida que search_local_news
+            items = []
+            for it in raw[: body.limit]:
+                items.append({
+                    "id": it.get("url"),
+                    "title": it.get("title"),
+                    "url": it.get("url"),
+                    "source": it.get("source"),
+                    "published_at": (it.get("published_at").isoformat() if hasattr(it.get("published_at"), 'isoformat') else it.get("published_at")),
+                    "summary": it.get("summary"),
+                })
+        else:
+            items = await search_local_news(
+                query=body.query,
+                city=(city_val or ""),
+                country=body.country or "MX",
+                lang=body.lang or "es-419",
+                days_back=body.days_back,
+                limit=body.limit,
+            )
+
         return {
             "query": body.query,
             "city": body.city or "",
             "country": body.country or "MX",
-            "count": len(items),
+            "count": len(items or []),
             "items": items or [],
         }
     except HTTPException:
