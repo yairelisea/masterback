@@ -13,6 +13,7 @@ from ..models import Campaign, IngestedItem, ItemStatus
 from .query_builder import build_query_variants
 from .search_local import search_local_news
 from .news_fetcher import search_google_news_multi_relaxed
+from .query_builder import build_basic_query
 import urllib.parse, feedparser, re, datetime as _dt, time as _time
 
 async def _google_news_fetch(q: str, lang: str, country: str, since: _dt.datetime, limit: int):
@@ -105,15 +106,13 @@ async def kickoff_campaign_ingest(campaign_id: str) -> None:
         
         all_items: List[Dict[str, Any]] = []
 
-        # Decide variantes de búsqueda: usa las persistidas si existen; si no, genera.
-        variants = campaign.search_variants or build_query_variants(q, city_keywords or [], None)
-
-        # Paso 1: GN básico por cada variante (cap para no exceder 10 variantes)
-        for v in variants[:10]:
-            gn = await _safe_search_google(v, lang, country, since, size)
+        # Consulta básica: "actor" + rol inferido + ciudad
+        basic_q = build_basic_query(actor=q, campaign_name=campaign.name, city_keywords=city_keywords)
+        if basic_q:
+            gn = await _safe_search_google(basic_q, lang, country, since, size)
             all_items.extend(gn)
 
-        # Paso 2: GN relajado (aliases + city boost) + backfill por medios, si no alcanza
+        # Paso 2: Fallback GN relajado sólo si no alcanzamos (mantiene enfoque GN)
         if len(all_items) < size:
             try:
                 relaxed = await search_google_news_multi_relaxed(

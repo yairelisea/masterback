@@ -103,3 +103,37 @@ def build_query_variants(
 
 
 __all__ = ["build_query_variants"]
+
+
+def build_basic_query(actor: str, campaign_name: str | None = None, city_keywords: Optional[Iterable[str]] = None) -> str:
+    """
+    Construye una consulta básica para Google News con el patrón:
+    "actor" <rol_inferido> <ciudad_principal>
+    - Si no se infiere rol: "actor" <ciudad>
+    - Si no hay ciudad: "actor"
+    """
+    a = (actor or "").strip()
+    if not a:
+        return ""
+    name = (campaign_name or "").lower()
+
+    def _infer_role() -> str | None:
+        # Busca rol en el nombre de la campaña o en el actor (texto auxiliar)
+        for r in ROLE_KEYWORDS:
+            if r in name:
+                return r
+        return None
+
+    role = _infer_role()
+    city = None
+    for c in _norm_list(city_keywords):
+        city = c
+        break
+
+    if role and city:
+        return f'"{a}" {role} {city}'
+    if city:
+        return f'"{a}" {city}'
+    return f'"{a}"'
+
+__all__.append("build_basic_query")
