@@ -16,6 +16,8 @@ from ..schemas import (
     CampaignOut,
     PlanTierEnum,
 )
+from ..schemas import IngestedItemOut, AnalysisOut
+from sqlalchemy import func
 
 router = APIRouter(prefix="/admin", tags=["admin-tools"])
 
@@ -198,6 +200,18 @@ async def admin_list_campaigns(
     return [_to_campaign_out(c) for c in rows]
 
 
+@router.get("/campaigns/{campaign_id}", response_model=CampaignOut)
+async def admin_get_campaign(
+    campaign_id: str,
+    _: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_session),
+):
+    camp = await db.get(Campaign, campaign_id)
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return _to_campaign_out(camp)
+
+
 @router.post("/campaigns", response_model=CampaignOut)
 async def admin_create_campaign(
     payload: AdminCampaignCreateIn,
@@ -263,6 +277,114 @@ async def admin_assign_campaign(
     await db.commit()
     await db.refresh(camp)
     return _to_campaign_out(camp)
+
+
+@router.get("/campaigns/{campaign_id}/items", response_model=list[IngestedItemOut])
+async def admin_list_campaign_items(
+    campaign_id: str,
+    page: int = 1,
+    per_page: int = 25,
+    order: str = "publishedAt",
+    dir: str = "desc",
+    _: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_session),
+):
+    camp = await db.get(Campaign, campaign_id)
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    per_page = max(1, min(per_page, 200))
+    offset = max(0, (page - 1) * per_page)
+    order_col = IngestedItem.publishedAt if order == "publishedAt" else IngestedItem.createdAt
+    order_by = order_col.desc() if str(dir).lower() == "desc" else order_col.asc()
+    q = (
+        select(IngestedItem)
+        .where(IngestedItem.campaignId == campaign_id)
+        .order_by(order_by)
+        .offset(offset)
+        .limit(per_page)
+    )
+    rows = (await db.execute(q)).scalars().all()
+    return [IngestedItemOut.model_validate(r) for r in rows]
+
+
+@router.get("/campaigns/{campaign_id}/analyses", response_model=list[AnalysisOut])
+async def admin_list_campaign_analyses(
+    campaign_id: str,
+    page: int = 1,
+    per_page: int = 25,
+    order: str = "createdAt",
+    dir: str = "desc",
+    _: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_session),
+):
+    camp = await db.get(Campaign, campaign_id)
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    per_page = max(1, min(per_page, 200))
+    offset = max(0, (page - 1) * per_page)
+    order_col = Analysis.createdAt if order == "createdAt" else Analysis.createdAt
+    order_by = order_col.desc() if str(dir).lower() == "desc" else order_col.asc()
+    q = (
+        select(Analysis)
+        .where(Analysis.campaignId == campaign_id)
+        .order_by(order_by)
+        .offset(offset)
+        .limit(per_page)
+    )
+    rows = (await db.execute(q)).scalars().all()
+    return [AnalysisOut.model_validate(r) for r in rows]
+
+
+@router.get("/campaigns/{campaign_id}/overview")
+async def admin_campaign_overview(
+    campaign_id: str,
+    _: dict = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_session),
+):
+    camp = await db.get(Campaign, campaign_id)
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    # Items counts by status
+    cnt_rows = (
+        await db.execute(
+            select(IngestedItem.status, func.count())
+            .where(IngestedItem.campaignId == campaign_id)
+            .group_by(IngestedItem.status)
+        )
+    ).all()
+    counts: Dict[str, int] = {str(s[0].value if s[0] else "NONE"): int(s[1]) for s in cnt_rows}
+
+    # Totals
+    total_items = sum(counts.values())
+    analyses_count = (
+        await db.execute(select(func.count()).select_from(Analysis).where(Analysis.campaignId == campaign_id))
+    ).scalar_one()
+
+    # Last timestamps
+    last_item_at = (
+        await db.execute(
+            select(func.max(IngestedItem.createdAt)).where(IngestedItem.campaignId == campaign_id)
+        )
+    ).scalar_one()
+    last_analysis_at = (
+        await db.execute(
+            select(func.max(Analysis.createdAt)).where(Analysis.campaignId == campaign_id)
+        )
+    ).scalar_one()
+
+    return {
+        "campaign": _to_campaign_out(camp).model_dump(),
+        "items": {
+            "total": total_items,
+            "by_status": counts,
+            "last_created_at": last_item_at,
+        },
+        "analyses": {
+            "total": int(analyses_count),
+            "last_created_at": last_analysis_at,
+        },
+    }
 
 
 # -----------------------------
