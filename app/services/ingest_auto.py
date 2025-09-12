@@ -42,9 +42,42 @@ async def _google_news_fetch(q: str, lang: str, country: str, since: _dt.datetim
     return out
 
 
+async def _bing_news_fetch(q: str, since: _dt.datetime, limit: int) -> List[Dict[str, Any]]:
+    """Minimal Bing News via RSS using feedparser (sync)."""
+    base = "https://www.bing.com/news/search"
+    params = {"q": q, "format": "rss"}
+    url = base + "?" + urllib.parse.urlencode(params)
+    feed = feedparser.parse(url)
+    out: List[Dict[str, Any]] = []
+    for e in getattr(feed, "entries", [])[: max(50, limit)]:
+        title = getattr(e, "title", "") or ""
+        link = getattr(e, "link", "") or ""
+        if not (title and link):
+            continue
+        dt = None
+        try:
+            if getattr(e, "published_parsed", None):
+                dt = _dt.datetime.fromtimestamp(_time.mktime(e.published_parsed), tz=_dt.timezone.utc)
+        except Exception:
+            dt = None
+        if since and dt and dt < since:
+            continue
+        out.append({"title": title, "url": link, "publishedAt": dt})
+        if len(out) >= limit:
+            break
+    return out
+
+
 async def _safe_search_google(q: str, lang: str, country: str, since: datetime, size: int) -> List[Dict[str, Any]]:
     try:
         items = await _google_news_fetch(q=q, lang=lang, country=country, since=since, limit=size)
+        return items or []
+    except Exception:
+        return []
+
+async def _safe_search_bing(q: str, since: datetime, size: int) -> List[Dict[str, Any]]:
+    try:
+        items = await _bing_news_fetch(q=q, since=since, limit=size)
         return items or []
     except Exception:
         return []
@@ -111,6 +144,9 @@ async def kickoff_campaign_ingest(campaign_id: str) -> None:
         if basic_q:
             gn = await _safe_search_google(basic_q, lang, country, since, size)
             all_items.extend(gn)
+            # También prova Bing con la misma consulta básica
+            bn = await _safe_search_bing(basic_q, since, size)
+            all_items.extend(bn)
 
         # Paso 2: Fallback GN relajado sólo si no alcanzamos (mantiene enfoque GN)
         if len(all_items) < size:
