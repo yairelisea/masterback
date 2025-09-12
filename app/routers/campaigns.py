@@ -1,6 +1,6 @@
 from __future__ import annotations
 from fastapi import APIRouter, Header, HTTPException, Depends, Request, BackgroundTasks 
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_session
 from ..models import Campaign
@@ -86,3 +86,50 @@ async def get_campaign(
     if (current_user.get("role") != "admin") and (c.userId != current_user.get("id")):
         raise HTTPException(status_code=403, detail="Forbidden")
     return _to_out(c)
+
+
+@router.get("/{campaign_id}/overview")
+async def campaign_overview(
+    campaign_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Compat: resumen de campaña (alias de admin overview) accesible para el dueño o admin.
+    Devuelve totales de items por status y totales de analyses.
+    """
+    c = await db.get(Campaign, campaign_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if (current_user.get("role") != "admin") and (c.userId != current_user.get("id")):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    from ..models import IngestedItem, Analysis
+
+    # Items por status
+    cnt_rows = (
+        await db.execute(
+            select(IngestedItem.status, func.count())
+            .where(IngestedItem.campaignId == campaign_id)
+            .group_by(IngestedItem.status)
+        )
+    ).all()
+    counts = {str(s[0].value if s[0] else "NONE"): int(s[1]) for s in cnt_rows}
+
+    total_items = sum(counts.values())
+    analyses_count = (
+        await db.execute(select(func.count()).select_from(Analysis).where(Analysis.campaignId == campaign_id))
+    ).scalar_one()
+
+    last_item_at = (
+        await db.execute(select(func.max(IngestedItem.createdAt)).where(IngestedItem.campaignId == campaign_id))
+    ).scalar_one()
+    last_analysis_at = (
+        await db.execute(select(func.max(Analysis.createdAt)).where(Analysis.campaignId == campaign_id))
+    ).scalar_one()
+
+    return {
+        "campaign": _to_out(c).model_dump(),
+        "items": {"total": total_items, "by_status": counts, "last_created_at": last_item_at},
+        "analyses": {"total": int(analyses_count), "last_created_at": last_analysis_at},
+    }
