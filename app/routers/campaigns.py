@@ -7,6 +7,7 @@ from ..models import Campaign
 from ..schemas import CampaignCreate, CampaignOut
 from ..deps import get_current_user
 from ..services.query_builder import build_query_variants
+from .. import models, schemas
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
@@ -105,6 +106,53 @@ async def get_campaign(
     if (current_user.get("role") != "admin") and (c.userId != current_user.get("id")):
         raise HTTPException(status_code=403, detail="Forbidden")
     return _to_out(c)
+
+
+# --- NUEVO: listar items de una campaña ---
+@router.get("/{campaign_id}/items", response_model=list[schemas.IngestedItemOut])
+async def list_campaign_items(
+    campaign_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    # Verifica que la campaña exista y pertenezca al usuario
+    c = await db.get(models.Campaign, campaign_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if c.userId != current_user["id"] and current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    q = (
+        select(models.IngestedItem)
+        .where(models.IngestedItem.campaignId == campaign_id)
+        .order_by(models.IngestedItem.createdAt.desc())
+        .limit(500)
+    )
+    rows = (await db.execute(q)).scalars().all()
+    return [schemas.IngestedItemOut.model_validate(x) for x in rows]
+
+
+# --- NUEVO: listar análisis de una campaña ---
+@router.get("/{campaign_id}/analyses", response_model=list[schemas.AnalysisOut])
+async def list_campaign_analyses(
+    campaign_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    c = await db.get(models.Campaign, campaign_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if c.userId != current_user["id"] and current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    q = (
+        select(models.Analysis)
+        .where(models.Analysis.campaignId == campaign_id)
+        .order_by(models.Analysis.createdAt.desc())
+        .limit(500)
+    )
+    rows = (await db.execute(q)).scalars().all()
+    return [schemas.AnalysisOut.model_validate(x) for x in rows]
 
 
 @router.get("/{campaign_id}/overview")
