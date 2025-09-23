@@ -100,19 +100,29 @@ async def create_campaign(
 
     return _to_out(campaign)
 
-@router.get("/{campaign_id}", response_model=CampaignOut)
-async def get_campaign(
-    campaign_id: str,
-    current_user: dict = Depends(get_current_user),
+@router.get("/{id}")
+async def get_campaign_by_id(
+    id: str,
     db: AsyncSession = Depends(get_session),
 ):
-    c = await db.get(Campaign, campaign_id)
-    if not c:
-        raise HTTPException(status_code=404, detail="Campaign not found")
-    # Permite ver si es dueño o admin
-    if (current_user.get("role") != "admin") and (c.userId != current_user.get("id")):
-        raise HTTPException(status_code=403, detail="Forbidden")
-    return _to_out(c)
+    """Obtiene una campaña por su ID.
+    - Path: /campaigns/{id}
+    - Devuelve JSON con todos los campos, incluyendo news_analysis.
+    - 404 si no existe.
+    - 500 si ocurre un error inesperado.
+    (Sin verificación de permisos, según ajustes de reparación solicitados.)
+    """
+    try:
+        c = await db.get(Campaign, id)
+        if not c:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        # Usamos el schema para asegurar serialización limpia (incluye news_analysis)
+        data = CampaignOut.model_validate(c).model_dump()
+        return data
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Internal server error") from e
 
 
 # --- NUEVO: listar items de una campaña ---
