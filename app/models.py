@@ -74,6 +74,9 @@ class Campaign(Base):
     # Variantes de búsqueda generadas (lista de strings)
     search_variants: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
+    # Nuevo: análisis rápido de noticias (avg_sentiment, artículos, etc.)
+    news_analysis: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     userId: Mapped[str | None] = mapped_column(String(50), ForeignKey("users.id"))
     user = relationship("User")
 

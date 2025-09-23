@@ -59,6 +59,7 @@ class CampaignOut(BaseModel):
     autoEnabled: bool = True
     userId: Optional[str] = None
     createdAt: Optional[datetime] = None
+    news_analysis: Optional[Dict[str, Any]] = None
 
     class Config:
         from_attributes = True

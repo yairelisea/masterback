@@ -34,6 +34,7 @@ async def _safe_pipeline(token: str, campaign_id: str):
 # -------- Unificar búsqueda/proceso para usuario (refresh) --------
 from ..db import SessionLocal
 from ..services.ingest_auto import kickoff_campaign_ingest
+from ..services.news_sentiment import run_initial_news_sentiment
 
 async def _refresh_campaign_task(campaign_id: str):
     try:
@@ -88,6 +89,12 @@ async def create_campaign(
         if token:
             from ..services.pipeline import run_gn_local_analyses
             background_tasks.add_task(run_gn_local_analyses, token, campaign.id)
+    except Exception:
+        pass
+
+    # Nuevo: disparar análisis rápido de noticias (sentiment headlines) en background
+    try:
+        background_tasks.add_task(run_initial_news_sentiment, campaign.id, SessionLocal)
     except Exception:
         pass
 
