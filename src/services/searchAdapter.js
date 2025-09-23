@@ -25,11 +25,12 @@ async function googleSearch(q, opts = {}) {
   if (!google.apiKey || !google.cx) {
     return [];
   }
+  // Forzamos 20 resultados siempre (ignora google.pageSize)
   const params = new URLSearchParams({
     key: google.apiKey,
     cx: google.cx,
     q,
-    num: String(google.pageSize || 10),
+    num: '20', // fijo a 20
   });
   const url = `https://www.googleapis.com/customsearch/v1?${params.toString()}`;
   const json = await safeFetchJson(url, opts.timeoutMs || defaults.timeoutMs);
