@@ -2,11 +2,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Header, HTTPException, Depends, Request, BackgroundTasks 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from ..db import get_session
+from ..db import get_session, SessionLocal
 from ..models import Campaign
 from ..schemas import CampaignCreate, CampaignOut
 from ..deps import get_current_user
 from ..services.query_builder import build_query_variants
+from ..services.ingest_auto import kickoff_campaign_ingest
 from .. import models, schemas
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
@@ -23,31 +24,11 @@ async def list_campaigns(
     rows = (await db.execute(q)).scalars().all()
     return [_to_out(c) for c in rows]
 
-async def _safe_pipeline(token: str, campaign_id: str):
-    try:
-        from ..services.pipeline import run_gn_local_analyses
-        await run_gn_local_analyses(token, campaign_id)
-    except Exception:
-        pass
-
-
-# -------- Unificar búsqueda/proceso para usuario (refresh) --------
-from ..db import SessionLocal
-from ..services.ingest_auto import kickoff_campaign_ingest
-from ..services.news_sentiment import run_initial_news_sentiment
-
 async def _refresh_campaign_task(campaign_id: str):
     try:
-        # 1) Ingesta GN+Bing (30 días) sin buscar cuota
         await kickoff_campaign_ingest(campaign_id)
     except Exception:
-        pass
-    # 2) Analiza pendientes
-    try:
-        async with SessionLocal() as db:
-            from .analyses_extra import process_pending as _process_pending
-            await _process_pending(campaignId=campaign_id, limit=200, db=db)  # type: ignore
-    except Exception:
+        # Log the error in a real application
         pass
 
 @router.post("", response_model=CampaignOut)
@@ -58,7 +39,6 @@ async def create_campaign(
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ):
-    # Genera variantes de búsqueda
     variants = build_query_variants(
         actor=payload.query,
         city_keywords=payload.city_keywords or [],
@@ -82,21 +62,8 @@ async def create_campaign(
     await db.commit()
     await db.refresh(campaign)
 
-    # Lanza pipeline GN + Local + Analyses en background
-    try:
-        auth_header = request.headers.get("authorization") or request.headers.get("Authorization") or ""
-        token = auth_header.split(" ", 1)[1].strip() if auth_header.lower().startswith("bearer ") else ""
-        if token:
-            from ..services.pipeline import run_gn_local_analyses
-            background_tasks.add_task(run_gn_local_analyses, token, campaign.id)
-    except Exception:
-        pass
-
-    # Nuevo: disparar análisis rápido de noticias (sentiment headlines) en background
-    try:
-        background_tasks.add_task(run_initial_news_sentiment, campaign.id, SessionLocal)
-    except Exception:
-        pass
+    # Lanza la ingesta y análisis en background
+    background_tasks.add_task(kickoff_campaign_ingest, campaign.id)
 
     return _to_out(campaign)
 
@@ -105,18 +72,10 @@ async def get_campaign_by_id(
     id: str,
     db: AsyncSession = Depends(get_session),
 ):
-    """Obtiene una campaña por su ID.
-    - Path: /campaigns/{id}
-    - Devuelve JSON con todos los campos, incluyendo news_analysis.
-    - 404 si no existe.
-    - 500 si ocurre un error inesperado.
-    (Sin verificación de permisos, según ajustes de reparación solicitados.)
-    """
     try:
         c = await db.get(Campaign, id)
         if not c:
             raise HTTPException(status_code=404, detail="Campaign not found")
-        # Usamos el schema para asegurar serialización limpia (incluye news_analysis)
         data = CampaignOut.model_validate(c).model_dump()
         return data
     except HTTPException:
@@ -124,15 +83,12 @@ async def get_campaign_by_id(
     except Exception as e:
         raise HTTPException(status_code=500, detail="Internal server error") from e
 
-
-# --- NUEVO: listar items de una campaña ---
 @router.get("/{campaign_id}/items", response_model=list[schemas.IngestedItemOut])
 async def list_campaign_items(
     campaign_id: str,
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ):
-    # Verifica que la campaña exista y pertenezca al usuario
     c = await db.get(models.Campaign, campaign_id)
     if not c:
         raise HTTPException(status_code=404, detail="Campaign not found")
@@ -148,8 +104,6 @@ async def list_campaign_items(
     rows = (await db.execute(q)).scalars().all()
     return [schemas.IngestedItemOut.model_validate(x) for x in rows]
 
-
-# --- NUEVO: listar análisis de una campaña ---
 @router.get("/{campaign_id}/analyses", response_model=list[schemas.AnalysisOut])
 async def list_campaign_analyses(
     campaign_id: str,
@@ -171,17 +125,12 @@ async def list_campaign_analyses(
     rows = (await db.execute(q)).scalars().all()
     return [schemas.AnalysisOut.model_validate(x) for x in rows]
 
-
 @router.get("/{campaign_id}/overview")
 async def campaign_overview(
     campaign_id: str,
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ):
-    """
-    Compat: resumen de campaña (alias de admin overview) accesible para el dueño o admin.
-    Devuelve totales de items por status y totales de analyses.
-    """
     c = await db.get(Campaign, campaign_id)
     if not c:
         raise HTTPException(status_code=404, detail="Campaign not found")
@@ -190,7 +139,6 @@ async def campaign_overview(
 
     from ..models import IngestedItem, Analysis
 
-    # Items por status
     cnt_rows = (
         await db.execute(
             select(IngestedItem.status, func.count())
@@ -218,7 +166,6 @@ async def campaign_overview(
         "analyses": {"total": int(analyses_count), "last_created_at": last_analysis_at},
     }
 
-
 @router.post("/{campaign_id}/refresh")
 async def refresh_campaign(
     campaign_id: str,
@@ -226,10 +173,6 @@ async def refresh_campaign(
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ):
-    """
-    Unificado: dispara ingesta (GN+Bing 30 días) + análisis en background.
-    Permite al dueño de la campaña o admin. Responde inmediato.
-    """
     c = await db.get(Campaign, campaign_id)
     if not c:
         raise HTTPException(status_code=404, detail="Campaign not found")
