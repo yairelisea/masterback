@@ -36,16 +36,23 @@ async def analyze_news(
     start_date_dt = end_date_dt - dt.timedelta(days=days_back)
     
     # Formato de fecha para la API de Perplexity: %m/%d/%Y
-    start_date_str = start_date_dt.strftime("%m/%d/%Y")
-    end_date_str = end_date_dt.strftime("%m/%d/%Y")
+    start_date_str_api = start_date_dt.strftime("%m/%d/%Y")
+    end_date_str_api = end_date_dt.strftime("%m/%d/%Y")
+
+    # Formato de fecha para el query string: YYYY-MM-DD
+    start_date_str_query = start_date_dt.strftime("%Y-%m-%d")
+    end_date_str_query = end_date_dt.strftime("%Y-%m-%d")
+
+    # Añadir filtros de fecha a la consulta
+    q_with_dates = f"{q} after:{start_date_str_query} before:{end_date_str_query}"
 
     try:
         # Llamar al servicio de Perplexity
         analyzed_articles = await perplexity_service.search_and_analyze(
-            query=q,
-            campaign_name=q,  # Usando la query como nombre de campaña
-            start_date=start_date_str,
-            end_date=end_date_str,
+            query=q_with_dates,
+            campaign_name=q,  # Usando la query original como nombre de campaña
+            start_date=start_date_str_api,
+            end_date=end_date_str_api,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error en el servicio de Perplexity: {e}")
