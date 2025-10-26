@@ -12,8 +12,11 @@ from perplexity import AsyncPerplexity, PerplexityError
 async def _get_url_content(url: str) -> str:
     """Obtiene el contenido de texto de una URL."""
     try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(url)
+            resp = await client.get(url, headers=headers)
             resp.raise_for_status()
             # Aquí se podría usar una librería como BeautifulSoup para extraer solo el texto principal
             # Por simplicidad, usaremos el texto completo, pero esto puede ser muy ruidoso
@@ -74,7 +77,19 @@ class PerplexityService:
                         {"role": "system", "content": "Eres un asistente de análisis de medios que solo responde con JSON."},
                         {"role": "user", "content": analysis_prompt},
                     ],
-                    response_format={"type": "json_object"},
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {
+                            "type": "object",
+                            "properties": {
+                                "summary": {"type": "string", "description": "Un resumen conciso de la noticia (2-3 frases)."},
+                                "sentiment_label": {"type": "string", "enum": ["Positivo", "Negativo", "Neutral"], "description": "El sentimiento general de la noticia."},
+                                "sentiment_score": {"type": "number", "description": "Un puntaje de sentimiento de -1.0 a 1.0."},
+                                "topics": {"type": "array", "items": {"type": "string"}, "description": "Una lista de 3 a 5 temas o palabras clave principales."}
+                            },
+                            "required": ["summary", "sentiment_label", "sentiment_score", "topics"]
+                        }
+                    },
                 )
 
                 analysis_content = chat_response.choices[0].message.content
