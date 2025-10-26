@@ -8,7 +8,13 @@ import httpx
 import os
 import xml.etree.ElementTree as ET
 
-from ..services.llm import analyze_snippet  # wrapper hacia OpenAI (ya existente)
+# from ..services.llm import analyze_snippet  # wrapper hacia OpenAI (ya existente)
+
+async def analyze_snippet(*args, **kwargs):
+    # Dummy function to avoid ModuleNotFoundError.
+    # The original llm.py service is missing.
+    # This will be caught by the try/except blocks below.
+    raise NotImplementedError("LLM service is not available")
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
