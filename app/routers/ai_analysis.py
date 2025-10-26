@@ -2,129 +2,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query, Header, HTTPException, Request
 from typing import Any, Dict, List, Optional
-import urllib.parse
 import datetime as dt
-import httpx
-import os
-import xml.etree.ElementTree as ET
 
-# from ..services.llm import analyze_snippet  # wrapper hacia OpenAI (ya existente)
-
-async def analyze_snippet(*args, **kwargs):
-    # Dummy function to avoid ModuleNotFoundError.
-    # The original llm.py service is missing.
-    # This will be caught by the try/except blocks below.
-    raise NotImplementedError("LLM service is not available")
+# Importar el servicio de Perplexity
+from ..services.perplexity_service import perplexity_service
 
 router = APIRouter(prefix="/ai", tags=["ai"])
-
-# -----------------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------------
-
-def _parse_pubdate(s: str | None) -> dt.datetime | None:
-    if not s:
-        return None
-    # Ej: "Wed, 03 Sep 2025 19:15:00 GMT"
-    for fmt in ("%a, %d %b %Y %H:%M:%S %Z", "%a, %d %b %Y %H:%M:%S %z"):
-        try:
-            return dt.datetime.strptime(s, fmt)
-        except Exception:
-            pass
-    return None
-
-def _extract_source(item: ET.Element) -> str:
-    """
-    Google News RSS trae <source url="...">Nombre</source>.
-    A veces aparece con distintos namespaces o sin ellos.
-    Buscamos de forma tolerante.
-    """
-    # 1) sin namespace
-    s = item.find("source")
-    if s is not None and (s.text or "").strip():
-        return s.text.strip()
-
-    # 2) namespace común de Google News
-    for ns in [
-        "http://news.google.com",    # frecuente
-        "http://www.google.com",     # variantes
-        "http://search.yahoo.com/mrss/",  # por si acaso (media RSS)
-    ]:
-        tag = item.find(f"{{{ns}}}source")
-        if tag is not None and (tag.text or "").strip():
-            return tag.text.strip()
-
-    return ""
-
-def _extract_link(item: ET.Element) -> str:
-    """
-    El <link> de Google News muchas veces apunta a un redirect propio.
-    Aquí devolvemos el texto tal cual; (opcional) podrías resolver el redirect
-    si lo necesitas (HEAD/GET follow_redirects=True).
-    """
-    link = item.findtext("link") or ""
-    return link.strip()
-
-# -----------------------------------------------------------------------------------
-# Google News RSS
-# -----------------------------------------------------------------------------------
-
-async def fetch_google_news(
-    q: str,
-    size: int = 25,
-    days_back: int = 14,
-    lang: str = "es-419",
-    country: str = "MX",
-) -> List[Dict[str, Any]]:
-    """
-    Consulta el RSS de Google News.
-    Retorna items: {title, link, pubDate, source}
-    """
-    encoded_q = urllib.parse.quote_plus(q)
-    base = "https://news.google.com/rss/search"
-    params = f"?q={encoded_q}&hl={lang}&gl={country}&ceid={country}:{lang}"
-    url = base + params
-
-    items: List[Dict[str, Any]] = []
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; BBXBot/1.0; +https://blackboxmonitor.com)"
-    }
-    async with httpx.AsyncClient(timeout=5, headers=headers) as client:
-        r = await client.get(url)
-        r.raise_for_status()
-        xml = r.text
-
-    root = ET.fromstring(xml)
-
-    for item in root.findall("./channel/item"):
-        title = (item.findtext("title") or "").strip()
-        link = _extract_link(item)
-        pubDate = (item.findtext("pubDate") or "").strip()
-        source = _extract_source(item)
-
-        items.append(
-            {
-                "title": title,
-                "link": link,
-                "pubDate": pubDate,
-                "source": source,
-            }
-        )
-
-    # filtro por rango temporal
-    if days_back and days_back > 0:
-        cutoff = dt.datetime.utcnow() - dt.timedelta(days=days_back)
-        filtered: List[Dict[str, Any]] = []
-        for it in items:
-            parsed = _parse_pubdate(it.get("pubDate"))
-            if parsed is None or parsed >= cutoff:
-                filtered.append(it)
-        items = filtered
-
-    # recorte de tamaño
-    size = max(1, min(size, 100))
-    return items[:size]
 
 # -----------------------------------------------------------------------------------
 # Endpoint principal
@@ -134,32 +17,40 @@ async def fetch_google_news(
 async def analyze_news(
     request: Request,
     q: str = Query(..., description="Consulta (ej. nombre del actor político)"),
-    size: int = Query(35, ge=1, le=100),
+    size: int = Query(35, ge=1, le=100), # Este parámetro ya no se usa directamente en la búsqueda de Perplexity
     days_back: int = Query(30, ge=1, le=60),
-    lang: str = Query("es-419"),
-    country: str = Query("MX"),
-    overall: bool = Query(True, description="Si true, devuelve resumen agregado"),
-    # Fallbacks por si algún proxy quita headers:
+    lang: str = Query("es-419"), # Parámetro no utilizado por Perplexity de esta forma
+    country: str = Query("MX"), # Parámetro no utilizado por Perplexity de esta forma
+    overall: bool = Query(True, description="Si true, devuelve resumen agregado (funcionalidad no disponible con Perplexity)"),
     userId: Optional[str] = None,
     x_user_id: Optional[str] = Header(default=None),
 ):
     """
-    1) Busca titulares en Google News (RSS).
-    2) Pide al LLM micro-resumen + sentimiento por titular.
-    3) (Opcional) Resumen agregado (“overall”).
+    1) Busca y analiza noticias usando el servicio de Perplexity.
+    2) Devuelve los resultados analizados.
     """
     effective_user = x_user_id or userId or "anonymous"
 
-    # 1) fuentes
+    # Calcular fechas para la búsqueda en Perplexity
+    end_date_dt = dt.datetime.utcnow()
+    start_date_dt = end_date_dt - dt.timedelta(days=days_back)
+    
+    # Formato de fecha para la API de Perplexity: %m/%d/%Y
+    start_date_str = start_date_dt.strftime("%m/%d/%Y")
+    end_date_str = end_date_dt.strftime("%m/%d/%Y")
+
     try:
-        articles = await fetch_google_news(
-            q=q, size=size, days_back=days_back, lang=lang, country=country
+        # Llamar al servicio de Perplexity
+        analyzed_articles = await perplexity_service.search_and_analyze(
+            query=q,
+            campaign_name=q,  # Usando la query como nombre de campaña
+            start_date=start_date_str,
+            end_date=end_date_str,
         )
     except Exception as e:
-        # problemas de red, XML, etc.
-        raise HTTPException(status_code=502, detail=f"RSS fetch error: {e}")
+        raise HTTPException(status_code=500, detail=f"Error en el servicio de Perplexity: {e}")
 
-    if not articles:
+    if not analyzed_articles:
         return {
             "overall": {
                 "summary": "No se encontraron notas en el periodo solicitado.",
@@ -172,71 +63,25 @@ async def analyze_news(
             "meta": {"q": q, "size": size, "days_back": days_back, "lang": lang, "country": country},
         }
 
-    # 2) análisis por ítem
-    summarized_items: List[Dict[str, Any]] = []
-    # Para evitar timeouts si hay clave real de OpenAI, limitamos el nº de análisis por item
-    MAX_ANALYZED = int(os.getenv("AI_PER_ITEM_LIMIT", "6"))
-    to_process = articles[: max(1, min(len(articles), MAX_ANALYZED))]
-    for art in to_process:
-        title = art.get("title") or ""
-        link = art.get("link") or ""
-        try:
-            llm = await analyze_snippet(
-                title=title.strip(),
-                summary=f"Enlace: {link}",
-                actor=q,
-            )
-            summarized_items.append(
-                {
-                    "title": title,
-                    "url": link,
-                    "pubDate": art.get("pubDate"),
-                    "source": art.get("source"),
-                    "llm": llm,  # {summary, sentiment_label, sentiment_score, topics, stance, perception}
-                }
-            )
-        except Exception as e:
-            summarized_items.append(
-                {
-                    "title": title,
-                    "url": link,
-                    "pubDate": art.get("pubDate"),
-                    "source": art.get("source"),
-                    "llm_error": str(e),
-                }
-            )
-
-    # 3) resumen agregado
-    overall_block: Dict[str, Any] = {}
-    if overall:
-        joined = "\n".join(f"- {it['title']}" for it in summarized_items if it.get("title"))
-        try:
-            agg = await analyze_snippet(
-                title=f"Resumen global de cobertura sobre: {q}",
-                summary=f"Titulares recientes:\n{joined}",
-                actor=q,
-            )
-            overall_block = {
-                "summary": agg.get("summary"),
-                "sentiment_label": agg.get("sentiment_label"),
-                "sentiment_score": agg.get("sentiment_score"),
-                "topics": agg.get("topics") or [],
-                "perception": agg.get("perception") or {},
-            }
-        except Exception as e:
-            overall_block = {
-                "summary": f"No fue posible generar el resumen agregado: {e}",
-                "sentiment_label": None,
-                "sentiment_score": None,
-                "topics": [],
-                "perception": {},
-            }
+    # El servicio de Perplexity ya devuelve los items analizados.
+    # La funcionalidad "overall" no está implementada en el nuevo servicio.
+    overall_block = {
+        "summary": "El resumen general no está disponible en esta versión.",
+        "sentiment_label": None,
+        "sentiment_score": None,
+        "topics": [],
+        "perception": {},
+    }
 
     return {
         "overall": overall_block,
-        "items": summarized_items,
+        "items": analyzed_articles,
         "meta": {
-            "q": q, "size": size, "days_back": days_back, "lang": lang, "country": country,
+            "q": q,
+            "size": size,
+            "days_back": days_back,
+            "lang": lang,
+            "country": country,
             "user": effective_user,
         },
     }

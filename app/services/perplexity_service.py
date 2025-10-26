@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import httpx
 import json
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from perplexity import AsyncPerplexity, PerplexityError
 
 # La clave de API se toma de las variables de entorno
@@ -33,7 +33,13 @@ class PerplexityService:
     def __init__(self):
         self.client = AsyncPerplexity()
 
-    async def search_and_analyze(self, query: str, campaign_name: str) -> List[Dict[str, Any]]:
+    async def search_and_analyze(
+        self, 
+        query: str, 
+        campaign_name: str, 
+        start_date: Optional[str] = None, 
+        end_date: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """
         Realiza una búsqueda en Perplexity y luego analiza cada resultado usando la API de Chat.
         """
@@ -41,7 +47,16 @@ class PerplexityService:
         
         try:
             # 1. Buscar artículos con la API de Búsqueda
-            search_results = await self.client.search.create(query=query, max_results=10)
+            search_params = {
+                "query": query,
+                "max_results": 10,
+            }
+            if start_date:
+                search_params["search_after_date_filter"] = start_date
+            if end_date:
+                search_params["search_before_date_filter"] = end_date
+            
+            search_results = await self.client.search.create(**search_params)
         except PerplexityError as e:
             print(f"Error en la API de Búsqueda de Perplexity: {e}")
             return []
@@ -80,14 +95,16 @@ class PerplexityService:
                     response_format={
                         "type": "json_schema",
                         "json_schema": {
-                            "type": "object",
-                            "properties": {
-                                "summary": {"type": "string", "description": "Un resumen conciso de la noticia (2-3 frases)."},
-                                "sentiment_label": {"type": "string", "enum": ["Positivo", "Negativo", "Neutral"], "description": "El sentimiento general de la noticia."},
-                                "sentiment_score": {"type": "number", "description": "Un puntaje de sentimiento de -1.0 a 1.0."},
-                                "topics": {"type": "array", "items": {"type": "string"}, "description": "Una lista de 3 a 5 temas o palabras clave principales."}
-                            },
-                            "required": ["summary", "sentiment_label", "sentiment_score", "topics"]
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "summary": {"type": "string", "description": "Un resumen conciso de la noticia (2-3 frases)."},
+                                    "sentiment_label": {"type": "string", "enum": ["Positivo", "Negativo", "Neutral"], "description": "El sentimiento general de la noticia."},
+                                    "sentiment_score": {"type": "number", "description": "Un puntaje de sentimiento de -1.0 a 1.0."},
+                                    "topics": {"type": "array", "items": {"type": "string"}, "description": "Una lista de 3 a 5 temas o palabras clave principales."}
+                                },
+                                "required": ["summary", "sentiment_label", "sentiment_score", "topics"]
+                            }
                         }
                     },
                 )
