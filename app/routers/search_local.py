@@ -1,4 +1,3 @@
-# app/routers/search_local.py
 from __future__ import annotations
 
 from typing import Optional, List, Dict, Any, Union
@@ -12,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_session, SessionLocal  # <- helpers
 from app.models import Campaign, IngestedItem, ItemStatus
 from app.services.search_local import search_local_news  # ✅ usa este nombre
+from app.services.perplexity_service import perplexity_service
 
 router = APIRouter(prefix="/search-local", tags=["search-local"])
 
@@ -201,7 +201,6 @@ async def recover_campaign_results(
 
 # Endpoint opcional para probar búsquedas sin campaña
 from pydantic import BaseModel, Field
-from app.services.news_fetcher import search_google_news_multi_relaxed
 
 # --- Ad-hoc search (sin campaña) ---
 # Permite probar la búsqueda local sin tocar DB.
@@ -236,26 +235,8 @@ async def ad_hoc_search(
             city_val = " ".join([str(x) for x in body.city_keywords if isinstance(x, (str, int, float))])
 
         if body.relaxed:
-            # Usa buscador relajado (aliases + boost). No persiste.
-            raw = await search_google_news_multi_relaxed(
-                q=body.query,
-                size=min(body.limit, 50),
-                days_back=body.days_back,
-                lang=body.lang or "es-419",
-                country=body.country or "MX",
-                city_keywords=(body.city_keywords or ([city_val] if city_val else None)),
-            )
-            # Normaliza a la misma salida que search_local_news
-            items = []
-            for it in raw[: body.limit]:
-                items.append({
-                    "id": it.get("url"),
-                    "title": it.get("title"),
-                    "url": it.get("url"),
-                    "source": it.get("source"),
-                    "published_at": (it.get("published_at").isoformat() if hasattr(it.get("published_at"), 'isoformat') else it.get("published_at")),
-                    "summary": it.get("summary"),
-                })
+            # Usa Perplexity para la búsqueda y análisis
+            items = await perplexity_service.search_and_analyze(query=body.query, campaign_name="Ad-hoc search")
         else:
             items = await search_local_news(
                 query=body.query,
