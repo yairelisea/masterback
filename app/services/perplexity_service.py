@@ -122,7 +122,17 @@ Responde solo con el objeto JSON.
                 )
 
                 analysis_content = chat_response.choices[0].message.content
-                if analysis_content.strip() and analysis_content.strip() != "{}":
+
+                # ------ LOGGING CLAVE ------
+                print(f"\n==== RESPUESTA IA PARA: {result.url} ====")
+                print(f"Resultado bruto IA:\n{analysis_content}\n")
+                # ------ FIN LOGGING ------
+
+                if not analysis_content or analysis_content.strip() in ["", "{}"]:
+                    print(f"IA devolvió vacío para {result.url}")
+                    continue
+
+                try:
                     analysis_json = json.loads(analysis_content)
                     analyzed_articles.append({
                         "title": result.title,
@@ -130,6 +140,10 @@ Responde solo con el objeto JSON.
                         "publishedAt": getattr(result, "publishedAt", None),
                         **analysis_json
                     })
+                except Exception as e:
+                    print(f"Error al parsear JSON para {result.url}: '{analysis_content}' -> {e}")
+                    continue
+
             except Exception as e:
                 print(f"Error procesando el artículo {result.url}: {e}")
                 continue
