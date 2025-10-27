@@ -70,6 +70,11 @@ class PerplexityService:
                 if not content:
                     continue
 
+                # NEW: Check if the content is relevant
+                if campaign_name.lower() not in content.lower():
+                    print(f"Skipping irrelevant article {result.url}")
+                    continue
+
                 # 3. Analizar el contenido con la API de Chat
                 analysis_prompt = f"""
                 Eres un analista de medios para un actor político. Analiza la siguiente noticia sobre '{campaign_name}' y extrae la siguiente información en formato JSON, con un enfoque en cómo la noticia podría afectar la percepción pública del actor:

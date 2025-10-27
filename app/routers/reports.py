@@ -3,11 +3,14 @@ from __future__ import annotations
 import io
 import os
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
+from datetime import date, datetime, timedelta
+from collections import Counter
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_session
@@ -203,3 +206,140 @@ async def post_report(payload: Dict[str, Any], request: Request, db: AsyncSessio
 
     suggested_name = (campaign.get("name") or campaign.get("query") or "Reporte").strip() or "Reporte"
     return await _proxy_pdf_service(data, suggested_name)
+
+class DailyNewsReportRequest(BaseModel):
+    campaignId: str
+    reportDate: date = date.today()
+
+@router.post("/daily-news")
+async def daily_news_report(
+    payload: DailyNewsReportRequest,
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Generates a PDF report for the daily news of a campaign.
+    """
+    campaign = await db.get(models.Campaign, payload.campaignId)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    # Fetch items and analyses for the specified date
+    start_of_day = datetime.combine(payload.reportDate, datetime.min.time())
+    end_of_day = datetime.combine(payload.reportDate, datetime.max.time())
+
+    items_q = (
+        select(models.IngestedItem)
+        .where(
+            models.IngestedItem.campaignId == payload.campaignId,
+            models.IngestedItem.createdAt >= start_of_day,
+            models.IngestedItem.createdAt <= end_of_day,
+        )
+        .order_by(models.IngestedItem.createdAt.desc())
+    )
+    items = (await db.execute(items_q)).scalars().all()
+
+    # Prepare data for the PDF service
+    report_items = []
+    for item in items:
+        if item.analysis:
+            report_items.append({
+                "title": item.title,
+                "url": item.url,
+                "publishedAt": item.publishedAt.isoformat() if item.publishedAt else None,
+                "summary": item.analysis.summary,
+                "sentiment_label": item.analysis.tone,
+                "sentiment_score": item.analysis.sentiment,
+                "topics": item.analysis.topics,
+                "key_points": item.analysis.key_points,
+            })
+
+    pdf_payload = {
+        "report_type": "daily_news",
+        "campaign": {
+            "name": campaign.name,
+            "query": campaign.query,
+        },
+        "report_date": payload.reportDate.isoformat(),
+        "items": report_items,
+    }
+
+    suggested_name = f"Reporte_Diario_{campaign.name}_{payload.reportDate.isoformat()}"
+    return await _proxy_pdf_service(pdf_payload, suggested_name)
+
+class DigitalPerceptionReportRequest(BaseModel):
+    campaignId: str
+    startDate: date
+    endDate: date = date.today()
+
+@router.post("/digital-perception")
+async def digital_perception_report(
+    payload: DigitalPerceptionReportRequest,
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Generates a PDF report for the digital perception of a campaign over a date range.
+    """
+    campaign = await db.get(models.Campaign, payload.campaignId)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    # Fetch analyses for the specified date range
+    start_of_day = datetime.combine(payload.startDate, datetime.min.time())
+    end_of_day = datetime.combine(payload.endDate, datetime.max.time())
+
+    analyses_q = (
+        select(models.Analysis)
+        .where(
+            models.Analysis.campaignId == payload.campaignId,
+            models.Analysis.createdAt >= start_of_day,
+            models.Analysis.createdAt <= end_of_day,
+        )
+    )
+    analyses = (await db.execute(analyses_q)).scalars().all()
+
+    # Process data for the report
+    sentiment_by_day = {}
+    all_topics = []
+    total_sentiment_score = 0
+
+    for analysis in analyses:
+        day = analysis.createdAt.date()
+        if day not in sentiment_by_day:
+            sentiment_by_day[day] = {"Positivo": 0, "Negativo": 0, "Neutral": 0}
+        
+        if analysis.tone in sentiment_by_day[day]:
+            sentiment_by_day[day][analysis.tone] += 1
+
+        if analysis.topics:
+            all_topics.extend(analysis.topics)
+        
+        if analysis.sentiment:
+            total_sentiment_score += analysis.sentiment
+
+    # Convert dates to strings for the payload
+    sentiment_trend = [
+        {"date": day.isoformat(), **counts} for day, counts in sorted(sentiment_by_day.items())
+    ]
+
+    topic_frequency = [{"topic": topic, "count": count} for topic, count in Counter(all_topics).most_common(10)]
+
+    average_sentiment = total_sentiment_score / len(analyses) if analyses else 0
+
+    pdf_payload = {
+        "report_type": "digital_perception",
+        "campaign": {
+            "name": campaign.name,
+            "query": campaign.query,
+        },
+        "start_date": payload.startDate.isoformat(),
+        "end_date": payload.endDate.isoformat(),
+        "summary": {
+            "total_articles": len(analyses),
+            "average_sentiment": round(average_sentiment, 2),
+        },
+        "sentiment_trend": sentiment_trend,
+        "topic_frequency": topic_frequency,
+    }
+
+    suggested_name = f"Reporte_Percepcion_{campaign.name}_{payload.startDate.isoformat()}_{payload.endDate.isoformat()}"
+    return await _proxy_pdf_service(pdf_payload, suggested_name)
