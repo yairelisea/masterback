@@ -32,31 +32,23 @@ async def kickoff_campaign_ingest(campaign_id: str) -> None:
         analyzed_items = await perplexity_service.search_and_analyze(query=basic_q, campaign_name=campaign_name)
 
         for item_data in analyzed_items:
-            item_id = str(uuid.uuid4())
-            
-            # Create IngestedItem
+            # Create IngestedItem and Analysis in one go using the relationship
             ingested_item = IngestedItem(
-                id=item_id,
                 campaignId=campaign.id,
                 title=item_data["title"],
                 url=item_data["url"],
                 publishedAt=item_data.get("publishedAt"),
                 status=ItemStatus.PROCESSED, # Mark as processed
                 createdAt=datetime.utcnow(),
+                analysis=Analysis(
+                    campaignId=campaign.id,
+                    sentiment=item_data.get("sentiment_score"),
+                    tone=item_data.get("sentiment_label"),
+                    topics=item_data.get("topics"),
+                    summary=item_data.get("summary"),
+                )
             )
-            
-            # Create Analysis
-            analysis = Analysis(
-                campaignId=campaign.id,
-                itemId=item_id,
-                sentiment=item_data.get("sentiment_score"),
-                tone=item_data.get("sentiment_label"),
-                topics=item_data.get("topics"),
-                summary=item_data.get("summary"),
-            )
-            
             db.add(ingested_item)
-            db.add(analysis)
 
         try:
             await db.commit()

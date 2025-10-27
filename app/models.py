@@ -154,7 +154,7 @@ class Analysis(Base):
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: str(uuid.uuid4()))
     campaignId: Mapped[str] = mapped_column(String(40), ForeignKey("campaigns.id"), index=True)
-    itemId: Mapped[str | None] = mapped_column(String(40), ForeignKey("ingested_items.id"))
+    itemId: Mapped[str] = mapped_column(String(40), ForeignKey("ingested_items.id"), unique=True)
 
     sentiment: Mapped[float | None] = mapped_column(Float, nullable=True)
     tone: Mapped[str | None] = mapped_column(String(50))
@@ -173,6 +173,7 @@ class Analysis(Base):
     features: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     campaign = relationship("Campaign", back_populates="analyses")
+    item = relationship("IngestedItem", back_populates="analysis")
 
 
 # ------------------------
@@ -252,3 +253,4 @@ class AlertNotification(Base):
     alertId: Mapped[str] = mapped_column(String(40), ForeignKey("alerts.id"), index=True)
     content: Mapped[dict] = mapped_column(JSON, nullable=False)
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+one=True), default=datetime.utcnow)

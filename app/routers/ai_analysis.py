@@ -6,6 +6,7 @@ import datetime as dt
 
 # Importar el servicio de Perplexity
 from ..services.perplexity_service import perplexity_service
+from ..services.query_builder import build_basic_query
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
@@ -43,8 +44,11 @@ async def analyze_news(
     start_date_str_query = start_date_dt.strftime("%Y-%m-%d")
     end_date_str_query = end_date_dt.strftime("%Y-%m-%d")
 
+    # Construir una consulta más específica
+    basic_q = build_basic_query(actor=q, campaign_name=q, city_keywords=[country])
+
     # Añadir filtros de fecha a la consulta
-    q_with_dates = f"{q} after:{start_date_str_query} before:{end_date_str_query}"
+    q_with_dates = f"{basic_q} after:{start_date_str_query} before:{end_date_str_query}"
 
     try:
         # Llamar al servicio de Perplexity

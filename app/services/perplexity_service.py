@@ -72,15 +72,16 @@ class PerplexityService:
 
                 # 3. Analizar el contenido con la API de Chat
                 analysis_prompt = f"""
-                Analiza el siguiente texto de una noticia y extrae la siguiente información en formato JSON:
-                1.  `summary`: Un resumen conciso de la noticia (2-3 frases).
-                2.  `sentiment_label`: El sentimiento general de la noticia. Debe ser uno de: "Positivo", "Negativo", "Neutral".
-                3.  `sentiment_score`: Un puntaje de sentimiento de -1.0 (muy negativo) a 1.0 (muy positivo).
-                4.  `topics`: Una lista de 3 a 5 temas o palabras clave principales.
+                Eres un analista de medios para un actor político. Analiza la siguiente noticia sobre '{campaign_name}' y extrae la siguiente información en formato JSON, con un enfoque en cómo la noticia podría afectar la percepción pública del actor:
+                1.  `summary`: Un resumen conciso de la noticia (2-3 frases), destacando la participación o mención del actor político.
+                2.  `sentiment_label`: El sentimiento general de la noticia hacia el actor político. Debe ser uno de: "Positivo", "Negativo", "Neutral".
+                3.  `sentiment_score`: Un puntaje de sentimiento de -1.0 (muy negativo) a 1.0 (muy positivo) con respecto al actor político.
+                4.  `topics`: Una lista de 3 a 5 temas o palabras clave principales de la noticia.
+                5.  `key_points`: Una lista de 2 a 3 puntos clave o citas directas de la noticia que sean más relevantes para el actor político.
 
                 Texto de la noticia:
                 ```
-                {content[:4000]}  # Limitar a ~4k caracteres para no exceder el límite de tokens
+                {content[:4000]}
                 ```
 
                 Responde únicamente con el objeto JSON.
@@ -98,12 +99,13 @@ class PerplexityService:
                             "schema": {
                                 "type": "object",
                                 "properties": {
-                                    "summary": {"type": "string", "description": "Un resumen conciso de la noticia (2-3 frases)."},
-                                    "sentiment_label": {"type": "string", "enum": ["Positivo", "Negativo", "Neutral"], "description": "El sentimiento general de la noticia."},
-                                    "sentiment_score": {"type": "number", "description": "Un puntaje de sentimiento de -1.0 a 1.0."},
-                                    "topics": {"type": "array", "items": {"type": "string"}, "description": "Una lista de 3 a 5 temas o palabras clave principales."}
+                                    "summary": {"type": "string", "description": "Un resumen conciso de la noticia (2-3 frases), destacando la participación o mención del actor político."},
+                                    "sentiment_label": {"type": "string", "enum": ["Positivo", "Negativo", "Neutral"], "description": "El sentimiento general de la noticia hacia el actor político."},
+                                    "sentiment_score": {"type": "number", "description": "Un puntaje de sentimiento de -1.0 a 1.0 con respecto al actor político."},
+                                    "topics": {"type": "array", "items": {"type": "string"}, "description": "Una lista de 3 a 5 temas o palabras clave principales de la noticia."},
+                                    "key_points": {"type": "array", "items": {"type": "string"}, "description": "Una lista de 2 a 3 puntos clave o citas directas de la noticia que sean más relevantes para el actor político."}
                                 },
-                                "required": ["summary", "sentiment_label", "sentiment_score", "topics"]
+                                "required": ["summary", "sentiment_label", "sentiment_score", "topics", "key_points"]
                             }
                         }
                     },
