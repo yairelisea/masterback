@@ -134,8 +134,12 @@ class IngestedItem(Base):
     title: Mapped[str] = mapped_column(Text, nullable=False)
     url: Mapped[str] = mapped_column(Text, nullable=False)
     publishedAt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # Importante: la base en producción puede no tener el valor 'PENDING' en el enum.
-    # Para compatibilidad, dejamos status como NULL (pendiente) por defecto.
+    status: Mapped[ItemStatus | None] = mapped_column(Enum(ItemStatus), nullable=True, default=None)
+    createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+    # Admin & subscription
+    isAdmin: Mapped[bool] = mapped_column(Boolean, default=False)
+    plan: Mapped[PlanTier] = mapped_column(Enum(PlanTier), default=PlanTier.BASIC)
     # Feature flags at user level (overrides): {"comparator": true, "connectors": false}
     features: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
