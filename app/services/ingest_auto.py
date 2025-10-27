@@ -31,8 +31,7 @@ async def kickoff_campaign_ingest(campaign_id: str) -> None:
         # Call Perplexity to get news and analysis
         analyzed_items = await perplexity_service.search_and_analyze(
             query=basic_q, 
-            campaign_name=campaign_name,
-            actor_name=q,
+            campaign_name=q, # Use actor's name for relevance check
         )
 
         for item_data in analyzed_items:

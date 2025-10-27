@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 import os
 import httpx
@@ -18,8 +17,6 @@ async def _get_url_content(url: str) -> str:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(url, headers=headers)
             resp.raise_for_status()
-            # Aquí se podría usar una librería como BeautifulSoup para extraer solo el texto principal
-            # Por simplicidad, usaremos el texto completo, pero esto puede ser muy ruidoso
             return resp.text
     except Exception as e:
         print(f"Error al obtener contenido de {url}: {e}")
@@ -65,13 +62,12 @@ class PerplexityService:
         for result in search_results.results:
             try:
                 # 2. Para cada artículo, obtener el contenido de la URL
-                # Nota: esto puede ser lento y propenso a errores (bloqueos, contenido dinámico, etc.)
                 content = await _get_url_content(result.url)
                 if not content:
                     continue
 
-                # NEW: Check if the content is relevant
-                if actor_name.lower() not in content.lower():
+                # Check if the content is relevant
+                if campaign_name.lower() not in content.lower():
                     print(f"Skipping irrelevant article {result.url}")
                     continue
 
@@ -123,7 +119,7 @@ class PerplexityService:
                 analyzed_articles.append({
                     "title": result.title,
                     "url": result.url,
-                    "publishedAt": None,  # La API de búsqueda no provee esta información
+                    "publishedAt": None,
                     "summary": analysis_json.get("summary"),
                     "sentiment_score": analysis_json.get("sentiment_score"),
                     "sentiment_label": analysis_json.get("sentiment_label"),
@@ -140,5 +136,3 @@ class PerplexityService:
 
 # Instancia del servicio para ser usada en otras partes de la aplicación
 perplexity_service = PerplexityService()
-ce = PerplexityService()
-rvice = PerplexityService()
