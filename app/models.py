@@ -253,4 +253,3 @@ class AlertNotification(Base):
     alertId: Mapped[str] = mapped_column(String(40), ForeignKey("alerts.id"), index=True)
     content: Mapped[dict] = mapped_column(JSON, nullable=False)
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
-one=True), default=datetime.utcnow)
