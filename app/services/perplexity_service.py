@@ -23,19 +23,6 @@ async def _get_url_content(url: str) -> str:
         print(f"Error al obtener contenido de {url}: {e}")
         return ""
 
-def nombre_variantes(nombre: str) -> List[str]:
-    # Puedes expandir esta lista para cada político
-    nombres = [
-        nombre,
-        "Olga Sosa Ruiz",
-        "Sosa Ruiz",
-        "Olga Patricia Sosa",
-        "Sosa",
-        "Olga Sosa",
-        # Agrega apodos/motes si los hay
-    ]
-    return [n.lower() for n in nombres]
-
 class PerplexityService:
     """
     Servicio para interactuar con la API de Perplexity para búsqueda y análisis de noticias.
@@ -53,13 +40,11 @@ class PerplexityService:
     ) -> List[Dict[str, Any]]:
         print(f"Iniciando búsqueda y análisis para la campaña: {campaign_name} con la consulta: {query}")
 
-        variantes = nombre_variantes(campaign_name)
-
         try:
             # Búsqueda
             search_params = {
                 "query": query,
-                "max_results": 10,
+                "max_results": 15,
             }
             if start_date:
                 search_params["search_after_date_filter"] = start_date
@@ -78,11 +63,6 @@ class PerplexityService:
                 content = await _get_url_content(result.url)
                 if not content:
                     continue
-
-                # Nuevo filtro: solo descarta si ninguna variante de nombre aparece
-                if not any(re.search(rf"\b{re.escape(v)}\b", content.lower()) for v in variantes):
-                    # Puedes loguear pero sigue pasando al análisis
-                    print(f"Posible irrelevancia {result.url}, pero se analizará con IA.")
                 
                 # Prompt mejorado: permite que IA decida si el actor es relevante
                 analysis_prompt = f"""
@@ -102,7 +82,7 @@ class PerplexityService:
                 """
 
                 chat_response = await self.client.chat.completions.create(
-                    model="sonar-medium-online", # o el más reciente
+                    model="llama-3.1-sonar-small-128k-online",
                     messages=[
                         {"role": "system", "content": "Eres un analista de medios que responde solo con objetos JSON."},
                         {"role": "user", "content": analysis_prompt},

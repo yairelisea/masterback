@@ -32,108 +32,45 @@ def _norm_list(values: Optional[Iterable[str]]) -> List[str]:
             out.append(s)
     return out
 
-
-def build_query_variants(
-    actor: str,
-    city_keywords: Optional[Iterable[str]] = None,
-    extras: Optional[Iterable[str]] = None,
-) -> List[str]:
+def get_name_variations(name: str) -> List[str]:
     """
-    Devuelve variantes de búsqueda con priorización para
-    "actor + ciudad + puesto" como las primeras opciones.
+    Generates a list of name variations for a given name.
+    This is a simple implementation and can be expanded.
     """
-    a = (actor or "").strip()
-    if not a:
-        return []
-
-    cities = _norm_list(city_keywords)
-    extra_words = _norm_list(extras)
-
-    ordered: List[str] = []
-    seen: set[str] = set()
-
-    def add(s: str):
-        s2 = s.strip()
-        if not s2:
-            return
-        if s2 not in seen:
-            seen.add(s2)
-            ordered.append(s2)
-
-    # 1) Prioridad: actor + rol + ciudad
-    for c in cities:
-        for r in ROLE_KEYWORDS:
-            add(f'{a} {r} {c}')
-            add(f'"{a}" {r} {c}')
-
-    # 2) actor + partido + ciudad
-    for c in cities:
-        for p in PARTY_KEYWORDS:
-            add(f'{a} {p} {c}')
-            add(f'"{a}" {p} {c}')
-
-    # 3) actor + ciudad
-    for c in cities:
-        add(f'{a} {c}')
-        add(f'"{a}" {c}')
-
-    # 4) actor + rol (sin ciudad)
-    for r in ROLE_KEYWORDS:
-        add(f'{a} {r}')
-        add(f'"{a}" {r}')
-
-    # 5) actor + partido (sin ciudad)
-    for p in PARTY_KEYWORDS:
-        add(f'{a} {p}')
-        add(f'"{a}" {p}')
-
-    # 6) extras (y extras + ciudad)
-    for x in extra_words:
-        add(f'{a} {x}')
-        add(f'"{a}" {x}')
-        for c in cities:
-            add(f'{a} {x} {c}')
-            add(f'"{a}" {x} {c}')
-
-    # 7) base
-    add(a)
-    add(f'"{a}"')
-
-    return ordered
-
-
-__all__ = ["build_query_variants"]
-
+    parts = name.split()
+    if len(parts) > 1:
+        return [name, f"{parts[0]} {parts[-1]}", parts[0], parts[-1]]
+    return [name]
 
 def build_basic_query(actor: str, campaign_name: str | None = None, city_keywords: Optional[Iterable[str]] = None) -> str:
     """
-    Construye una consulta básica para Google News con el patrón:
-    "actor" <rol_inferido> <ciudad_principal>
-    - Si no se infiere rol: "actor" <ciudad>
-    - Si no hay ciudad: "actor"
+    Builds a more specific query for Perplexity using OR for name variations.
     """
     a = (actor or "").strip()
     if not a:
         return ""
+
+    name_variations = get_name_variations(a)
+    name_query = f"({' OR '.join(name_variations)})"
+
+    role = None
     name = (campaign_name or "").lower()
+    for r in ROLE_KEYWORDS:
+        if r in name:
+            role = r
+            break
 
-    def _infer_role() -> str | None:
-        # Busca rol en el nombre de la campaña o en el actor (texto auxiliar)
-        for r in ROLE_KEYWORDS:
-            if r in name:
-                return r
-        return None
-
-    role = _infer_role()
     city = None
     for c in _norm_list(city_keywords):
         city = c
         break
 
-    if role and city:
-        return f'"{a}" {role} {city}'
+    query_parts = [name_query]
+    if role:
+        query_parts.append(role)
     if city:
-        return f'"{a}" {city}'
-    return f'"{a}"'
+        query_parts.append(city)
 
-__all__.append("build_basic_query")
+    return " ".join(query_parts)
+
+__all__ = ["build_basic_query"]
