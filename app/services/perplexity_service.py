@@ -140,4 +140,5 @@ class PerplexityService:
 
 # Instancia del servicio para ser usada en otras partes de la aplicación
 perplexity_service = PerplexityService()
+ce = PerplexityService()
 rvice = PerplexityService()
