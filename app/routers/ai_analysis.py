@@ -55,6 +55,7 @@ async def analyze_news(
         analyzed_articles = await perplexity_service.search_and_analyze(
             query=q_with_dates,
             campaign_name=q,  # Usando la query original como nombre de campaña
+            actor_name=q,
             start_date=start_date_str_api,
             end_date=end_date_str_api,
         )

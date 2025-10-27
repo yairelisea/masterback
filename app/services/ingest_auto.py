@@ -29,7 +29,11 @@ async def kickoff_campaign_ingest(campaign_id: str) -> None:
         basic_q = build_basic_query(actor=q, campaign_name=campaign_name, city_keywords=campaign.city_keywords)
 
         # Call Perplexity to get news and analysis
-        analyzed_items = await perplexity_service.search_and_analyze(query=basic_q, campaign_name=campaign_name)
+        analyzed_items = await perplexity_service.search_and_analyze(
+            query=basic_q, 
+            campaign_name=campaign_name,
+            actor_name=q,
+        )
 
         for item_data in analyzed_items:
             # Create IngestedItem and Analysis in one go using the relationship

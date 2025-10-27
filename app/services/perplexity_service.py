@@ -71,7 +71,7 @@ class PerplexityService:
                     continue
 
                 # NEW: Check if the content is relevant
-                if campaign_name.lower() not in content.lower():
+                if actor_name.lower() not in content.lower():
                     print(f"Skipping irrelevant article {result.url}")
                     continue
 
@@ -128,6 +128,7 @@ class PerplexityService:
                     "sentiment_score": analysis_json.get("sentiment_score"),
                     "sentiment_label": analysis_json.get("sentiment_label"),
                     "topics": analysis_json.get("topics"),
+                    "key_points": analysis_json.get("key_points"),
                 })
 
             except Exception as e:
@@ -139,3 +140,4 @@ class PerplexityService:
 
 # Instancia del servicio para ser usada en otras partes de la aplicación
 perplexity_service = PerplexityService()
+rvice = PerplexityService()
