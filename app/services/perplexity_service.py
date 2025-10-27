@@ -82,7 +82,7 @@ class PerplexityService:
                 """
 
                 chat_response = await self.client.chat.completions.create(
-                    model="llama-3-sonar-small-32k-online",
+                    model="sonar-pro",
                     messages=[
                         {"role": "system", "content": "Eres un analista de medios que responde solo con objetos JSON."},
                         {"role": "user", "content": analysis_prompt},
