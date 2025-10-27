@@ -36,9 +36,9 @@ async def analyze_news(
     end_date_dt = dt.datetime.utcnow()
     start_date_dt = end_date_dt - dt.timedelta(days=days_back)
     
-    # Formato de fecha para la API de Perplexity: YYYY-MM-DD
-    start_date_str_api = start_date_dt.strftime("%Y-%m-%d")
-    end_date_str_api = end_date_dt.strftime("%Y-%m-%d")
+    # Formato de fecha para la API de Perplexity: MM/DD/YYYY
+    start_date_str_api = start_date_dt.strftime("%m/%d/%Y")
+    end_date_str_api = end_date_dt.strftime("%m/%d/%Y")
 
     # Formato de fecha para el query string: YYYY-MM-DD
     start_date_str_query = start_date_dt.strftime("%Y-%m-%d")
