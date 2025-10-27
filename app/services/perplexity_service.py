@@ -123,17 +123,18 @@ Responde solo con el objeto JSON.
 
                 analysis_content = chat_response.choices[0].message.content
 
-                # ------ LOGGING CLAVE ------
-                print(f"\n==== RESPUESTA IA PARA: {result.url} ====")
-                print(f"Resultado bruto IA:\n{analysis_content}\n")
-                # ------ FIN LOGGING ------
+                print(f"\n==RESPUESTA IA PARA {result.url}==\n{analysis_content}\n")
 
-                if not analysis_content or analysis_content.strip() in ["", "{}"]:
-                    print(f"IA devolvió vacío para {result.url}")
+                # Extrae el primer bloque JSON, omitiendo texto extra de la IA
+                json_match = re.search(r"({.*})", analysis_content, re.DOTALL)
+                if not json_match:
+                    print(f"No se encontró JSON en la respuesta IA para {result.url}")
                     continue
 
+                only_json = json_match.group(1)
+
                 try:
-                    analysis_json = json.loads(analysis_content)
+                    analysis_json = json.loads(only_json)
                     analyzed_articles.append({
                         "title": result.title,
                         "url": result.url,
@@ -141,7 +142,7 @@ Responde solo con el objeto JSON.
                         **analysis_json
                     })
                 except Exception as e:
-                    print(f"Error al parsear JSON para {result.url}: '{analysis_content}' -> {e}")
+                    print(f"Error al parsear JSON para {result.url}: '{only_json}' -> {e}")
                     continue
 
             except Exception as e:
