@@ -45,6 +45,180 @@ class PerplexityService:
     def __init__(self):
         self.client = AsyncPerplexity()
 
+    async def get_daily_actor_summary(self, actor_name: str) -> Dict[str, Any]:
+        """
+        Realiza una búsqueda y resumen diario sobre un actor político.
+        """
+        print(f"Iniciando resumen diario para el actor: {actor_name}")
+
+        analysis_prompt = f"""
+Realiza una búsqueda automatizada enfocada, extrayendo y resumiendo las **notas y principales publicaciones del día** sobre el actor político "{actor_name}" en medios digitales, prensa y redes sociales (Facebook, Instagram, X, blogs, etc.), tanto a nivel nacional como estatal. Limítate a las 5-10 notas o publicaciones más relevantes y recientes de las últimas 24 horas.
+
+Presenta los resultados en el siguiente formato JSON:
+
+1.  **Resumen Diario Express:**
+    - Sintetiza en máximo 3 líneas las tendencias, hechos y menciones clave del actor político en el periodo monitoreado (último día).
+
+2.  **Registro de Evidencia (5-10 entradas):**
+    - Enumera entre 5 y 10 notas/noticias y publicaciones del día, mezclando prensa y redes sociales, con breve descripción, fecha y link público si es posible.
+
+Prioriza velocidad y relevancia, omite duplicados y enfócate únicamente en hechos/narrativas del día. Este informe es para monitoreo y actualización diaria, usable en dashboards o reportes express.
+"""
+
+        try:
+            chat_response = await self.client.chat.completions.create(
+                model="sonar-reasoning",
+                messages=[
+                    {"role": "system", "content": "Eres un asistente de investigación especializado en análisis de medios y actores políticos. Tu tarea es realizar búsquedas y presentar la information en un formato JSON estructurado y conciso, siguiendo estrictamente las instrucciones del usuario."},
+                    {"role": "user", "content": analysis_prompt},
+                ],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "resumen_diario_express": {
+                                    "type": "string",
+                                    "description": "Síntesis en máximo 3 líneas de las tendencias, hechos y menciones clave del actor político en las últimas 24 horas."
+                                },
+                                "registro_de_evidencia": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "descripcion": {"type": "string"},
+                                            "fecha": {"type": "string"},
+                                            "link": {"type": "string", "format": "uri"}
+                                        },
+                                        "required": ["descripcion", "fecha", "link"]
+                                    },
+                                    "description": "Lista de 5 a 10 notas/publicaciones relevantes con descripción, fecha y link."
+                                }
+                            },
+                            "required": ["resumen_diario_express", "registro_de_evidencia"]
+                        }
+                    }
+                },
+            )
+
+            analysis_content = chat_response.choices[0].message.content
+            print(f"\n==RESPUESTA IA PARA {actor_name}==\n{analysis_content}\n")
+
+            # El contenido ya debería ser un JSON válido gracias a response_format
+            analysis_json = json.loads(analysis_content)
+            return analysis_json
+
+        except PerplexityError as e:
+            print(f"Error en la API de Perplexity para el actor '{actor_name}': {e}")
+            return {"error": str(e)}
+        except json.JSONDecodeError as e:
+            print(f"Error al decodificar JSON para el actor '{actor_name}': {e}")
+            return {"error": "Error decodificando la respuesta JSON."}
+        except Exception as e:
+            print(f"Error inesperado durante el resumen para '{actor_name}': {e}")
+            return {"error": "Ocurrió un error inesperado."}
+
+    async def get_weekly_actor_report(self, actor_name: str) -> Dict[str, Any]:
+        """
+        Realiza un análisis semanal integral sobre un actor político.
+        """
+        print(f"Iniciando reporte semanal para el actor: {actor_name}")
+
+        analysis_prompt = f"""
+Realiza una búsqueda, extracción y análisis integral sobre el actor político "{actor_name}", considerando contenido público en medios digitales, redes sociales, prensa, columnas y blogs relevantes a nivel nacional y estatal, limitado a los últimos 30 días.
+
+Organiza el resultado en tres secciones estructuradas tipo informe, en formato JSON:
+
+1. **Resumen Ejecutivo y Métricas Clave:**
+    - Sintetiza hechos, tendencias y posicionamientos relevantes del actor.
+    - Incluye métricas de interacción: seguidores, comentarios, likes, menciones, cobertura mediática, participación en eventos y debates nacionales/estatales.
+
+2. **Análisis Político, Comunicacional y FODA:**
+    - Resume narrativas clave, posicionamientos, controversias y alianzas a nivel nacional y estatal.
+    - Extrae actores aliados/rivales y temas recurrentes de interés en la conversación política digital y mediática.
+    - Presenta FODA estratégico (Fortalezas, Oportunidades, Debilidades, Amenazas) con respaldo en evidencia digital/mediática.
+
+3. **Log y Evidencia (20 registros mezclados):**
+    - Enumera hasta 20 publicaciones relevantes: incluye tanto notas periodísticas, columnas, blogs, como posts, reels, videos y tweets públicos generados en redes sociales.
+    - Incluye para cada registro: breve descripción/contexto, fecha, tipo de medio y enlace público (cuando sea posible).
+
+Prioriza extracción mixta (prensa y RS), informaciones no duplicadas, e identifica los momentos más relevantes del actor en el último mes.
+"""
+
+        try:
+            chat_response = await self.client.chat.completions.create(
+                model="sonar-reasoning",
+                messages=[
+                    {"role": "system", "content": "Eres un asistente de investigación y análisis estratégico especializado en el sector político. Tu tarea es realizar análisis integrales y presentar la información en un formato JSON estructurado y profesional, siguiendo estrictamente las instrucciones del usuario."},
+                    {"role": "user", "content": analysis_prompt},
+                ],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "resumen_ejecutivo": {
+                                    "type": "object",
+                                    "properties": {
+                                        "sintesis": {"type": "string", "description": "Síntesis de hechos, tendencias y posicionamientos relevantes del actor."},
+                                        "metricas_clave": {"type": "string", "description": "Métricas de interacción: seguidores, comentarios, likes, menciones, etc."}
+                                    },
+                                    "required": ["sintesis", "metricas_clave"]
+                                },
+                                "analisis_estrategico": {
+                                    "type": "object",
+                                    "properties": {
+                                        "narrativas_clave": {"type": "string", "description": "Narrativas, posicionamientos, controversias y alianzas."},
+                                        "actores_y_temas": {"type": "string", "description": "Actores aliados/rivales y temas recurrentes."},
+                                        "analisis_foda": {
+                                            "type": "object",
+                                            "properties": {
+                                                "fortalezas": {"type": "array", "items": {"type": "string"}},
+                                                "oportunidades": {"type": "array", "items": {"type": "string"}},
+                                                "debilidades": {"type": "array", "items": {"type": "string"}},
+                                                "amenazas": {"type": "array", "items": {"type": "string"}}
+                                            },
+                                            "required": ["fortalezas", "oportunidades", "debilidades", "amenazas"]
+                                        }
+                                    },
+                                    "required": ["narrativas_clave", "actores_y_temas", "analisis_foda"]
+                                },
+                                "log_de_evidencia": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "descripcion": {"type": "string"},
+                                            "fecha": {"type": "string"},
+                                            "tipo_de_medio": {"type": "string"},
+                                            "link": {"type": "string", "format": "uri"}
+                                        },
+                                        "required": ["descripcion", "fecha", "tipo_de_medio", "link"]
+                                    },
+                                    "description": "Lista de hasta 20 publicaciones relevantes (medios y redes sociales)."
+                                }
+                            },
+                            "required": ["resumen_ejecutivo", "analisis_estrategico", "log_de_evidencia"]
+                        }
+                    }
+                },
+            )
+
+            analysis_content = chat_response.choices[0].message.content
+            print(f"\n==REPORTE SEMANAL IA PARA {actor_name}==\n{analysis_content}\n")
+
+            analysis_json = json.loads(analysis_content)
+            return analysis_json
+
+        except PerplexityError as e:
+            print(f"Error en la API de Perplexity para el reporte semanal de '{actor_name}': {e}")
+            return {"error": str(e)}
+        except Exception as e:
+            print(f"Error inesperado durante el reporte semanal para '{actor_name}': {e}")
+            return {"error": "Ocurrió un error inesperado."}
+
     async def search_and_analyze(
         self, 
         query: str, 

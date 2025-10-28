@@ -96,3 +96,47 @@ async def analyze_news(
             "user": effective_user,
         },
     }
+
+@router.get("/daily-summary")
+async def get_daily_summary(
+    q: str = Query(..., description="Nombre del actor político para el resumen diario"),
+):
+    """
+    1) Obtiene un resumen diario y un registro de evidencia para un actor político.
+    2) Utiliza el método get_daily_actor_summary del servicio de Perplexity.
+    """
+    try:
+        # Llamar al nuevo servicio para obtener el resumen diario
+        daily_summary_data = await perplexity_service.get_daily_actor_summary(
+            actor_name=q
+        )
+        
+        if daily_summary_data.get("error"):
+            raise HTTPException(status_code=500, detail=daily_summary_data.get("error"))
+
+        return daily_summary_data
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al generar el resumen diario: {e}")
+
+@router.get("/weekly-report")
+async def get_weekly_report(
+    q: str = Query(..., description="Nombre del actor político para el reporte semanal"),
+):
+    """
+    1) Obtiene un reporte semanal completo para un actor político.
+    2) Utiliza el método get_weekly_actor_report del servicio de Perplexity.
+    """
+    try:
+        # Llamar al servicio para obtener el reporte semanal
+        weekly_report_data = await perplexity_service.get_weekly_actor_report(
+            actor_name=q
+        )
+        
+        if weekly_report_data.get("error"):
+            raise HTTPException(status_code=500, detail=weekly_report_data.get("error"))
+
+        return weekly_report_data
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al generar el reporte semanal: {e}")
