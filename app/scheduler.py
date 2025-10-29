@@ -4,7 +4,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from .db import get_session
+from .db import SessionLocal
 from . import models
 from datetime import datetime, timezone, date, timedelta
 from .services.ingest_auto import kickoff_campaign_ingest
@@ -45,7 +45,7 @@ def _should_run_now(c: models.Campaign, now: datetime) -> bool:
     return True
 
 async def campaign_tick():
-    async with get_session() as session:
+    async with SessionLocal() as session:  # ✅ FIX: Usar SessionLocal directamente
         res = await session.execute(select(models.Campaign).where(models.Campaign.autoEnabled == True))
         campaigns = res.scalars().all()
         today = _today_mx()
