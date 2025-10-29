@@ -1,3 +1,4 @@
+f# app/routers/campaigns.py
 from __future__ import annotations
 from fastapi import APIRouter, Header, HTTPException, Depends, Request, BackgroundTasks 
 from sqlalchemy import select, func
@@ -9,8 +10,10 @@ from ..deps import get_current_user
 from ..services.query_builder import build_query_variants
 from ..services.ingest_auto import kickoff_campaign_ingest
 from .. import models, schemas
+import logging
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
+logger = logging.getLogger(__name__)
 
 def _to_out(c: Campaign) -> CampaignOut:
     return CampaignOut.model_validate(c)
@@ -24,13 +27,6 @@ async def list_campaigns(
     rows = (await db.execute(q)).scalars().all()
     return [_to_out(c) for c in rows]
 
-async def _refresh_campaign_task(campaign_id: str):
-    try:
-        await kickoff_campaign_ingest(campaign_id)
-    except Exception:
-        # Log the error in a real application
-        pass
-
 @router.post("", response_model=CampaignOut)
 async def create_campaign(
     request: Request,
@@ -39,6 +35,9 @@ async def create_campaign(
     current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ):
+    """
+    ✅ Crea campaña con background task protegido
+    """
     variants = build_query_variants(
         actor=payload.query,
         city_keywords=payload.city_keywords or [],
@@ -62,9 +61,30 @@ async def create_campaign(
     await db.commit()
     await db.refresh(campaign)
 
-    # Lanza la ingesta y análisis en background
-    background_tasks.add_task(kickoff_campaign_ingest, campaign.id)
+    # ✅ WRAPPER PROTEGIDO - NUNCA rompe el servidor
+    async def safe_ingest():
+        """Wrapper que captura TODOS los errores"""
+        try:
+            logger.info(f"🚀 Starting background ingestion for campaign {campaign.id}")
+            await kickoff_campaign_ingest(campaign.id)
+            logger.info(f"✅ Background ingestion completed for campaign {campaign.id}")
+        except Exception as e:
+            logger.error(
+                f"❌ Background ingestion failed for campaign {campaign.id}: {e}", 
+                exc_info=True
+            )
+            # ✅ Opcional: guardar error en DB
+            try:
+                async with SessionLocal() as error_db:
+                    error_campaign = await error_db.get(Campaign, campaign.id)
+                    if error_campaign and hasattr(error_campaign, 'last_ingestion_error'):
+                        error_campaign.last_ingestion_error = str(e)[:500]
+                        await error_db.commit()
+            except Exception as db_error:
+                logger.error(f"Failed to save error to DB: {db_error}")
 
+    background_tasks.add_task(safe_ingest)
+    
     return _to_out(campaign)
 
 @router.get("/{id}")
@@ -178,5 +198,13 @@ async def refresh_campaign(
         raise HTTPException(status_code=404, detail="Campaign not found")
     if (current_user.get("role") != "admin") and (c.userId != current_user.get("id")):
         raise HTTPException(status_code=403, detail="Forbidden")
-    background_tasks.add_task(_refresh_campaign_task, campaign_id)
+    
+    # ✅ Task protegido
+    async def safe_refresh():
+        try:
+            await kickoff_campaign_ingest(campaign_id)
+        except Exception as e:
+            logger.error(f"❌ Refresh failed for {campaign_id}: {e}")
+    
+    background_tasks.add_task(safe_refresh)
     return {"accepted": True, "campaignId": campaign_id, "mode": "async"}

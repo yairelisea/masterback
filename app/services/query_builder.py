@@ -1,7 +1,7 @@
+f# app/services/query_builder.py
 from __future__ import annotations
 
 from typing import Iterable, List, Optional
-
 
 ROLE_KEYWORDS = [
     "alcalde",
@@ -15,10 +15,11 @@ ROLE_KEYWORDS = [
     "senadora",
     "candidato",
     "candidata",
+    "gobernador",
+    "gobernadora",
 ]
 
 PARTY_KEYWORDS = ["morena", "pan", "pri", "prd", "mc", "verde", "pt"]
-
 
 def _norm_list(values: Optional[Iterable[str]]) -> List[str]:
     out: List[str] = []
@@ -86,7 +87,7 @@ def build_query_variants(
         add(f'{a} {p}')
         add(f'"{a}" {p}')
 
-    # 6) extras (y extras + ciudad)
+    # 6) extras
     for x in extra_words:
         add(f'{a} {x}')
         add(f'"{a}" {x}')
@@ -102,43 +103,81 @@ def build_query_variants(
 
 def get_name_variations(name: str) -> List[str]:
     """
-    Generates a list of name variations for a given name.
-    This is a simple implementation and can be expanded.
+    Genera variaciones de un nombre (nombre completo, nombre + apellido, etc.)
     """
     parts = name.split()
     if len(parts) > 1:
         return [name, f"{parts[0]} {parts[-1]}", parts[0], parts[-1]]
     return [name]
 
-def build_basic_query(actor: str, campaign_name: str | None = None, city_keywords: Optional[Iterable[str]] = None) -> str:
+def build_basic_query(
+    actor: str, 
+    campaign_name: str | None = None, 
+    city_keywords: Optional[Iterable[str]] = None,
+    country: str = "MX",
+    require_exact_match: bool = True
+) -> str:
     """
-    Builds a more specific query for Perplexity using OR for name variations.
+    ✅ Construye query ESPECÍFICO con operadores booleanos para Perplexity
+    
+    Ejemplo:
+    Entrada: actor="Marcelo Abundiz", city_keywords=["Tamaulipas", "Altamira"]
+    Salida: "Marcelo Abundiz" AND (diputado OR diputada) AND ("Tamaulipas" OR "Altamira") AND (México OR Mexicano)
     """
+    import re
+    
     a = (actor or "").strip()
     if not a:
         return ""
 
-    name_variations = get_name_variations(a)
-    name_query = f"({' OR '.join(name_variations)})"
-
+    # ✅ Detectar rol del nombre de campaña
     role = None
-    name = (campaign_name or "").lower()
-    for r in ROLE_KEYWORDS:
-        if r in name:
-            role = r
+    name_lower = (campaign_name or "").lower()
+    
+    role_map = {
+        "alcalde": "alcalde OR presidente municipal",
+        "alcaldesa": "alcaldesa OR presidenta municipal",
+        "diputado": "diputado OR diputada",
+        "senador": "senador OR senadora",
+        "gobernador": "gobernador OR gobernadora",
+    }
+    
+    for keyword, expanded in role_map.items():
+        if keyword in name_lower:
+            role = expanded
             break
-
-    city = None
-    for c in _norm_list(city_keywords):
-        city = c
-        break
-
-    query_parts = [name_query]
+    
+    # ✅ Construir query con operadores booleanos
+    query_parts = []
+    
+    # Nombre exacto con comillas (obligatorio)
+    if require_exact_match:
+        query_parts.append(f'"{a}"')
+    else:
+        # Alternativa: variaciones del nombre
+        name_vars = get_name_variations(a)
+        query_parts.append(f"({' OR '.join(name_vars)})")
+    
+    # Rol (si se detectó)
     if role:
-        query_parts.append(role)
-    if city:
-        query_parts.append(city)
+        query_parts.append(f"AND ({role})")
+    
+    # Ciudad/región (crítico para relevancia)
+    cities = _norm_list(city_keywords)
+    if cities:
+        city_query = " OR ".join([f'"{c}"' for c in cities[:3]])  # Top 3 ciudades
+        query_parts.append(f"AND ({city_query})")
+    
+    # País (ayuda con relevancia)
+    if country:
+        country_names = {
+            "MX": "México OR Mexicano OR Mexicana",
+            "US": "Estados Unidos OR USA",
+        }
+        if country in country_names:
+            query_parts.append(f"AND ({country_names[country]})")
+    
+    final_query = " ".join(query_parts)
+    return final_query
 
-    return " ".join(query_parts)
-
-__all__ = ["build_query_variants", "build_basic_query"]
+__all__ = ["build_query_variants", "build_basic_query", "get_name_variations"]

@@ -1,28 +1,71 @@
+# app/services/perplexity_service.py
 from __future__ import annotations
 import os
 import httpx
 import json
 import re
+import asyncio
+import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from perplexity import AsyncPerplexity, PerplexityError
 
-# La clave de API se toma de las variables de entorno
-# El usuario ha confirmado que PERPLEXITY_API_KEY está configurada
+logger = logging.getLogger(__name__)
 
-async def _get_url_content(url: str) -> str:
-    """Obtiene el contenido de texto de una URL."""
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(url, headers=headers)
-            resp.raise_for_status()
-            return resp.text
-    except Exception as e:
-        print(f"Error al obtener contenido de {url}: {e}")
-        return ""
+async def _get_url_content(url: str, max_retries: int = 2) -> str:
+    """
+    ✅ Resiliente: timeout, retry, validación de contenido
+    """
+    for attempt in range(max_retries):
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+            timeout = httpx.Timeout(10.0, connect=5.0)
+            
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.get(
+                    url, 
+                    headers=headers, 
+                    follow_redirects=True
+                )
+                resp.raise_for_status()
+                
+                # ✅ Validar tamaño
+                if len(resp.content) > 2_000_000:  # 2MB max
+                    logger.warning(f"⚠️ Content too large: {url} ({len(resp.content)} bytes)")
+                    return ""
+                
+                # ✅ Validar que sea texto
+                content_type = resp.headers.get("content-type", "").lower()
+                if "text" not in content_type and "html" not in content_type:
+                    logger.warning(f"⚠️ Non-text content: {url} ({content_type})")
+                    return ""
+                
+                text = resp.text[:10_000]  # ✅ Truncar
+                
+                # ✅ Validar contenido mínimo
+                if len(text.strip()) < 100:
+                    logger.warning(f"⚠️ Insufficient content: {url}")
+                    return ""
+                
+                return text
+                
+        except httpx.TimeoutException:
+            logger.warning(f"⏱️ Timeout fetching {url} (attempt {attempt + 1})")
+            if attempt == max_retries - 1:
+                return ""
+            await asyncio.sleep(2)
+            
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"⚠️ HTTP {e.response.status_code} for {url}")
+            return ""  # ✅ No retry en 404, 403, etc.
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Error fetching {url}: {e}")
+            return ""
+    
+    return ""
 
 def to_mmddyyyy(date_str: Optional[str]) -> Optional[str]:
     if not date_str:
@@ -35,225 +78,129 @@ def to_mmddyyyy(date_str: Optional[str]) -> Optional[str]:
         try:
             return datetime.strptime(date_str, "%Y-%m-%d").strftime("%m/%d/%Y")
         except Exception as e:
-            print(f"Error formateando la fecha '{date_str}': {e}")
+            logger.error(f"Error formateando la fecha '{date_str}': {e}")
             return None
-    # Si es otro formato, intenta devolver None para forzar validación
-    print(f"Formato de fecha no reconocido: '{date_str}'")
+    logger.warning(f"Formato de fecha no reconocido: '{date_str}'")
     return None
+
 
 class PerplexityService:
     def __init__(self):
         self.client = AsyncPerplexity()
 
-    async def get_daily_actor_summary(self, actor_name: str) -> Dict[str, Any]:
-        """
-        Realiza una búsqueda y resumen diario sobre un actor político.
-        """
-        print(f"Iniciando resumen diario para el actor: {actor_name}")
-
-        analysis_prompt = f"""
-Realiza una búsqueda automatizada enfocada, extrayendo y resumiendo las **notas y principales publicaciones del día** sobre el actor político "{actor_name}" en medios digitales, prensa y redes sociales (Facebook, Instagram, X, blogs, etc.), tanto a nivel nacional como estatal. Limítate a las 5-10 notas o publicaciones más relevantes y recientes de las últimas 24 horas.
-
-Presenta los resultados en el siguiente formato JSON:
-
-1.  **Resumen Diario Express:**
-    - Sintetiza en máximo 3 líneas las tendencias, hechos y menciones clave del actor político en el periodo monitoreado (último día).
-
-2.  **Registro de Evidencia (5-10 entradas):**
-    - Enumera entre 5 y 10 notas/noticias y publicaciones del día, mezclando prensa y redes sociales, con breve descripción, fecha y link público si es posible.
-
-Prioriza velocidad y relevancia, omite duplicados y enfócate únicamente en hechos/narrativas del día. Este informe es para monitoreo y actualización diaria, usable en dashboards o reportes express.
-"""
-
-        try:
-            chat_response = await self.client.chat.completions.create(
-                model="sonar-reasoning",
-                messages=[
-                    {"role": "system", "content": "Eres un asistente de investigación especializado en análisis de medios y actores políticos. Tu tarea es realizar búsquedas y presentar la information en un formato JSON estructurado y conciso, siguiendo estrictamente las instrucciones del usuario."},
-                    {"role": "user", "content": analysis_prompt},
-                ],
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "resumen_diario_express": {
-                                    "type": "string",
-                                    "description": "Síntesis en máximo 3 líneas de las tendencias, hechos y menciones clave del actor político en las últimas 24 horas."
-                                },
-                                "registro_de_evidencia": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "descripcion": {"type": "string"},
-                                            "fecha": {"type": "string"},
-                                            "link": {"type": "string", "format": "uri"}
-                                        },
-                                        "required": ["descripcion", "fecha", "link"]
-                                    },
-                                    "description": "Lista de 5 a 10 notas/publicaciones relevantes con descripción, fecha y link."
-                                }
-                            },
-                            "required": ["resumen_diario_express", "registro_de_evidencia"]
-                        }
-                    }
-                },
-            )
-
-            analysis_content = chat_response.choices[0].message.content
-            print(f"\n==RESPUESTA IA PARA {actor_name}==\n{analysis_content}\n")
-
-            # El contenido ya debería ser un JSON válido gracias a response_format
-            analysis_json = json.loads(analysis_content)
-            return analysis_json
-
-        except PerplexityError as e:
-            print(f"Error en la API de Perplexity para el actor '{actor_name}': {e}")
-            return {"error": str(e)}
-        except json.JSONDecodeError as e:
-            print(f"Error al decodificar JSON para el actor '{actor_name}': {e}")
-            return {"error": "Error decodificando la respuesta JSON."}
-        except Exception as e:
-            print(f"Error inesperado durante el resumen para '{actor_name}': {e}")
-            return {"error": "Ocurrió un error inesperado."}
-
-    async def get_weekly_actor_report(self, actor_name: str) -> Dict[str, Any]:
-        """
-        Realiza un análisis semanal integral sobre un actor político.
-        """
-        print(f"Iniciando reporte semanal para el actor: {actor_name}")
-
-        analysis_prompt = f"""
-Realiza una búsqueda, extracción y análisis integral sobre el actor político "{actor_name}", considerando contenido público en medios digitales, redes sociales, prensa, columnas y blogs relevantes a nivel nacional y estatal, limitado a los últimos 30 días.
-
-Organiza el resultado en tres secciones estructuradas tipo informe, en formato JSON:
-
-1. **Resumen Ejecutivo y Métricas Clave:**
-    - Sintetiza hechos, tendencias y posicionamientos relevantes del actor.
-    - Incluye métricas de interacción: seguidores, comentarios, likes, menciones, cobertura mediática, participación en eventos y debates nacionales/estatales.
-
-2. **Análisis Político, Comunicacional y FODA:**
-    - Resume narrativas clave, posicionamientos, controversias y alianzas a nivel nacional y estatal.
-    - Extrae actores aliados/rivales y temas recurrentes de interés en la conversación política digital y mediática.
-    - Presenta FODA estratégico (Fortalezas, Oportunidades, Debilidades, Amenazas) con respaldo en evidencia digital/mediática.
-
-3. **Log y Evidencia (20 registros mezclados):**
-    - Enumera hasta 20 publicaciones relevantes: incluye tanto notas periodísticas, columnas, blogs, como posts, reels, videos y tweets públicos generados en redes sociales.
-    - Incluye para cada registro: breve descripción/contexto, fecha, tipo de medio y enlace público (cuando sea posible).
-
-Prioriza extracción mixta (prensa y RS), informaciones no duplicadas, e identifica los momentos más relevantes del actor en el último mes.
-"""
-
-        try:
-            chat_response = await self.client.chat.completions.create(
-                model="sonar-reasoning",
-                messages=[
-                    {"role": "system", "content": "Eres un asistente de investigación y análisis estratégico especializado en el sector político. Tu tarea es realizar análisis integrales y presentar la información en un formato JSON estructurado y profesional, siguiendo estrictamente las instrucciones del usuario."},
-                    {"role": "user", "content": analysis_prompt},
-                ],
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "resumen_ejecutivo": {
-                                    "type": "object",
-                                    "properties": {
-                                        "sintesis": {"type": "string", "description": "Síntesis de hechos, tendencias y posicionamientos relevantes del actor."},
-                                        "metricas_clave": {"type": "string", "description": "Métricas de interacción: seguidores, comentarios, likes, menciones, etc."}
-                                    },
-                                    "required": ["sintesis", "metricas_clave"]
-                                },
-                                "analisis_estrategico": {
-                                    "type": "object",
-                                    "properties": {
-                                        "narrativas_clave": {"type": "string", "description": "Narrativas, posicionamientos, controversias y alianzas."},
-                                        "actores_y_temas": {"type": "string", "description": "Actores aliados/rivales y temas recurrentes."},
-                                        "analisis_foda": {
-                                            "type": "object",
-                                            "properties": {
-                                                "fortalezas": {"type": "array", "items": {"type": "string"}},
-                                                "oportunidades": {"type": "array", "items": {"type": "string"}},
-                                                "debilidades": {"type": "array", "items": {"type": "string"}},
-                                                "amenazas": {"type": "array", "items": {"type": "string"}}
-                                            },
-                                            "required": ["fortalezas", "oportunidades", "debilidades", "amenazas"]
-                                        }
-                                    },
-                                    "required": ["narrativas_clave", "actores_y_temas", "analisis_foda"]
-                                },
-                                "log_de_evidencia": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "descripcion": {"type": "string"},
-                                            "fecha": {"type": "string"},
-                                            "tipo_de_medio": {"type": "string"},
-                                            "link": {"type": "string", "format": "uri"}
-                                        },
-                                        "required": ["descripcion", "fecha", "tipo_de_medio", "link"]
-                                    },
-                                    "description": "Lista de hasta 20 publicaciones relevantes (medios y redes sociales)."
-                                }
-                            },
-                            "required": ["resumen_ejecutivo", "analisis_estrategico", "log_de_evidencia"]
-                        }
-                    }
-                },
-            )
-
-            analysis_content = chat_response.choices[0].message.content
-            print(f"\n==REPORTE SEMANAL IA PARA {actor_name}==\n{analysis_content}\n")
-
-            analysis_json = json.loads(analysis_content)
-            return analysis_json
-
-        except PerplexityError as e:
-            print(f"Error en la API de Perplexity para el reporte semanal de '{actor_name}': {e}")
-            return {"error": str(e)}
-        except Exception as e:
-            print(f"Error inesperado durante el reporte semanal para '{actor_name}': {e}")
-            return {"error": "Ocurrió un error inesperado."}
-
     async def search_and_analyze(
         self, 
         query: str, 
         campaign_name: str, 
+        city_keywords: Optional[List[str]] = None,
         start_date: Optional[str] = None, 
-        end_date: Optional[str] = None
+        end_date: Optional[str] = None,
+        max_retries: int = 3,
+        min_relevance_score: float = 40.0
     ) -> List[Dict[str, Any]]:
-        print(f"Iniciando búsqueda y análisis para la campaña: {campaign_name} con la consulta: {query}")
+        """
+        ✅ Resiliente: maneja timeouts, rate limits, errores parciales
+        ✅ Con filtrado en capas (pre-filtro + análisis)
+        """
+        logger.info(f"🔍 Perplexity search: query='{query[:50]}...', campaign='{campaign_name}'")
 
+        # Formatear fechas
         formatted_start = to_mmddyyyy(start_date)
         formatted_end = to_mmddyyyy(end_date)
 
-        try:
-            search_params = {
-                "query": query,
-                "max_results": 15,
-            }
-            if formatted_start:
-                search_params["search_after_date_filter"] = formatted_start
-            if formatted_end:
-                search_params["search_before_date_filter"] = formatted_end
+        # ✅ RETRY LOOP para la búsqueda
+        search_results = None
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                search_params = {
+                    "query": query,
+                    "max_results": 15,
+                }
+                if formatted_start:
+                    search_params["search_after_date_filter"] = formatted_start
+                if formatted_end:
+                    search_params["search_before_date_filter"] = formatted_end
 
-            # SIN model en la búsqueda
-            search_results = await self.client.search.create(**search_params)
-        except PerplexityError as e:
-            print(f"Error en la API de Búsqueda de Perplexity: {e}")
+                search_results = await asyncio.wait_for(
+                    self.client.search.create(**search_params),
+                    timeout=30.0  # ✅ Timeout de 30 seg
+                )
+                logger.info(f"✅ Search successful: {len(search_results.results)} results")
+                break  # ✅ Éxito - salir del retry loop
+                
+            except asyncio.TimeoutError:
+                last_error = f"Timeout on attempt {attempt + 1}"
+                logger.warning(f"⏱️ {last_error}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                    
+            except PerplexityError as e:
+                last_error = str(e)
+                logger.error(f"❌ Perplexity API error (attempt {attempt + 1}): {e}")
+                if "rate limit" in str(e).lower():
+                    await asyncio.sleep(10)
+                elif attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+                else:
+                    logger.error(f"Giving up after {max_retries} attempts")
+                    return []
+                    
+            except Exception as e:
+                last_error = str(e)
+                logger.error(f"❌ Unexpected error (attempt {attempt + 1}): {e}")
+                if attempt == max_retries - 1:
+                    return []
+
+        # ✅ Si falló después de todos los retries
+        if not search_results or not search_results.results:
+            logger.error(f"❌ Search failed after {max_retries} attempts: {last_error}")
             return []
 
+        logger.info(f"📊 Got {len(search_results.results)} raw results from Perplexity")
+
+        # ✅ CAPA 2: Pre-filtro rápido (implementado en siguiente sección)
+        from .relevance_filter import quick_relevance_check
+        
+        filtered_results = []
+        for idx, result in enumerate(search_results.results):
+            is_relevant, score = await quick_relevance_check(
+                result_title=result.title,
+                result_url=result.url,
+                actor_name=campaign_name,
+                city_keywords=city_keywords,
+            )
+            
+            if is_relevant and score >= min_relevance_score:
+                filtered_results.append((result, score))
+                logger.debug(f"✅ Result {idx} PASSED pre-filter (score: {score:.1f}): {result.title[:60]}")
+            else:
+                logger.debug(f"⛔ Result {idx} REJECTED (score: {score:.1f}): {result.title[:60]}")
+        
+        filtered_results.sort(key=lambda x: x[1], reverse=True)
+        logger.info(f"🎯 After pre-filter: {len(filtered_results)}/{len(search_results.results)} relevant")
+        
+        if not filtered_results:
+            logger.warning("⚠️ No relevant results after pre-filtering")
+            return []
+
+        # ✅ CAPA 3: Análisis profundo solo para resultados filtrados
         analyzed_articles = []
-        for result in search_results.results:
+        
+        for idx, (result, pre_score) in enumerate(filtered_results[:10]):
             try:
-                content = await _get_url_content(result.url)
-                if not content:
+                # ✅ Timeout individual para cada artículo
+                content = await asyncio.wait_for(
+                    _get_url_content(result.url),
+                    timeout=15.0
+                )
+                
+                if not content or len(content.strip()) < 100:
+                    logger.warning(f"⚠️ Article {idx} has insufficient content: {result.url}")
                     continue
 
+                # ✅ Análisis con IA (con timeout)
                 analysis_prompt = f"""
 Analiza el siguiente texto sobre política mexicana.
 Si '{campaign_name}' NO tiene relevancia, responde solo {{}}
@@ -267,64 +214,97 @@ Si SÍ es relevante, responde con este objeto JSON:
 Texto:
 {content[:4000]}
 
-text
 Responde solo con el objeto JSON.
 """
 
-                chat_response = await self.client.chat.completions.create(
-                    model="sonar-reasoning",  # solo aquí se especifica el modelo!!!
-                    messages=[
-                        {"role": "system", "content": "Eres un analista de medios que responde solo con objetos JSON definidos por el usuario."},
-                        {"role": "user", "content": analysis_prompt},
-                    ],
-                    response_format={
-                        "type": "json_schema",
-                        "json_schema": {
-                            "schema": {
-                                "type": "object",
-                                "properties": {
-                                    "summary": {"type": "string"},
-                                    "sentiment_label": {"type": "string", "enum": ["Positivo", "Negativo", "Neutral"]},
-                                    "sentiment_score": {"type": "number"},
-                                    "topics": {"type": "array", "items": {"type": "string"}},
-                                    "key_points": {"type": "array", "items": {"type": "string"}}
-                                },
-                                "required": ["summary", "sentiment_label", "sentiment_score", "topics", "key_points"]
+                chat_response = await asyncio.wait_for(
+                    self.client.chat.completions.create(
+                        model="sonar-reasoning",
+                        messages=[
+                            {"role": "system", "content": "Eres un analista de medios que responde solo con objetos JSON definidos por el usuario."},
+                            {"role": "user", "content": analysis_prompt},
+                        ],
+                        response_format={
+                            "type": "json_schema",
+                            "json_schema": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "summary": {"type": "string"},
+                                        "sentiment_label": {"type": "string", "enum": ["Positivo", "Negativo", "Neutral"]},
+                                        "sentiment_score": {"type": "number"},
+                                        "topics": {"type": "array", "items": {"type": "string"}},
+                                        "key_points": {"type": "array", "items": {"type": "string"}}
+                                    },
+                                    "required": ["summary", "sentiment_label", "sentiment_score", "topics", "key_points"]
+                                }
                             }
-                        }
-                    },
+                        },
+                    ),
+                    timeout=20.0
                 )
 
                 analysis_content = chat_response.choices[0].message.content
 
-                print(f"\n==RESPUESTA IA PARA {result.url}==\n{analysis_content}\n")
-
-                # Extrae el primer bloque JSON, omitiendo texto extra de la IA
+                # ✅ Parse JSON con validación
                 json_match = re.search(r"({.*})", analysis_content, re.DOTALL)
                 if not json_match:
-                    print(f"No se encontró JSON en la respuesta IA para {result.url}")
+                    logger.warning(f"⚠️ No JSON found in IA response for {result.url}")
                     continue
 
                 only_json = json_match.group(1)
-
-                try:
-                    analysis_json = json.loads(only_json)
-                    analyzed_articles.append({
-                        "title": result.title,
-                        "url": result.url,
-                        "publishedAt": getattr(result, "publishedAt", None),
-                        **analysis_json
-                    })
-                except Exception as e:
-                    print(f"Error al parsear JSON para {result.url}: '{only_json}' -> {e}")
+                analysis_json = json.loads(only_json)
+                
+                # ✅ Validar campos requeridos
+                if not analysis_json.get("summary"):
+                    logger.warning(f"⚠️ Empty summary for {result.url}")
                     continue
+                
+                # ✅ VALIDACIÓN FINAL: verificar que mencione al actor
+                summary_lower = analysis_json.get("summary", "").lower()
+                actor_lower = campaign_name.lower()
+                
+                has_actor = actor_lower in summary_lower
+                has_city = any((c or "").lower() in summary_lower for c in (city_keywords or []))
+                
+                if not has_actor and not has_city:
+                    logger.warning(f"⚠️ Analysis doesn't mention actor/city: {result.url}")
+                    continue
+                
+                analyzed_articles.append({
+                    "title": result.title,
+                    "url": result.url,
+                    "publishedAt": getattr(result, "publishedAt", None),
+                    "_relevance_score": pre_score,
+                    **analysis_json
+                })
+                
+                logger.debug(f"✅ Analyzed article {idx + 1}/{len(filtered_results)}")
 
+            except asyncio.TimeoutError:
+                logger.warning(f"⏱️ Timeout analyzing article {idx}: {result.url}")
+                continue
+                
+            except json.JSONDecodeError as e:
+                logger.warning(f"⚠️ Invalid JSON for article {idx}: {e}")
+                continue
+                
             except Exception as e:
-                print(f"Error procesando el artículo {result.url}: {e}")
+                logger.error(f"❌ Error processing article {idx} ({result.url}): {e}")
                 continue
 
-        print(f"Análisis completado. Se procesaron {len(analyzed_articles)} artículos.")
+        logger.info(f"✅ Analysis complete: {len(analyzed_articles)}/{len(search_results.results)} successful")
         return analyzed_articles
 
-# Instancia del servicio para ser usada en otras partes de la aplicación
+    # ✅ Funciones de reportes (las actualizaremos en Fase 3)
+    async def get_daily_actor_summary(self, actor_name: str) -> Dict[str, Any]:
+        """Placeholder - se actualizará en Fase 3"""
+        return {"error": "Not implemented yet"}
+
+    async def get_weekly_actor_report(self, actor_name: str) -> Dict[str, Any]:
+        """Placeholder - se actualizará en Fase 3"""
+        return {"error": "Not implemented yet"}
+
+
+# Instancia global
 perplexity_service = PerplexityService()
