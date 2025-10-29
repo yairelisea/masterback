@@ -1,4 +1,4 @@
-f# app/services/query_builder.py
+
 from __future__ import annotations
 
 from typing import Iterable, List, Optional
