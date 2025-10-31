@@ -7,7 +7,7 @@ import re
 import asyncio
 import logging
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from perplexity import AsyncPerplexity, PerplexityError
 
 logger = logging.getLogger(__name__)
@@ -160,11 +160,36 @@ class PerplexityService:
 
         logger.info(f"📊 Got {len(search_results.results)} raw results from Perplexity")
 
+        # ✅ CAPA 1: Filtrar por fecha (últimas 2 semanas)
+        recent_results = []
+        two_weeks_ago = datetime.now(timezone.utc) - timedelta(days=14)
+
+        for result in search_results.results:
+            if hasattr(result, "publishedAt") and result.publishedAt:
+                try:
+                    published_date = result.publishedAt
+                    if not isinstance(published_date, datetime):
+                        published_date = datetime.fromisoformat(str(published_date).replace("Z", "+00:00"))
+                    
+                    if published_date.tzinfo is None:
+                        published_date = published_date.replace(tzinfo=timezone.utc)
+
+                    if published_date >= two_weeks_ago:
+                        recent_results.append(result)
+                except (ValueError, TypeError):
+                    # Si la fecha es inválida, se omite
+                    continue
+            else:
+                # Si no hay fecha, lo dejamos pasar por ahora
+                recent_results.append(result)
+        
+        logger.info(f"📅 After date filtering: {len(recent_results)}/{len(search_results.results)} recent")
+
         # ✅ CAPA 2: Pre-filtro rápido (implementado en siguiente sección)
         from .relevance_filter import quick_relevance_check
         
         filtered_results = []
-        for idx, result in enumerate(search_results.results):
+        for idx, result in enumerate(recent_results):
             is_relevant, score = await quick_relevance_check(
                 result_title=result.title,
                 result_url=result.url,
