@@ -308,7 +308,7 @@ Responde solo con el objeto JSON.
             try:
                 content = await asyncio.wait_for(
                     _get_url_content(url),
-                    timeout=15.0
+                    timeout=30.0
                 )
 
                 if not content or len(content.strip()) < 100:
@@ -366,7 +366,12 @@ Responde solo con el objeto JSON.
                     continue
 
                 only_json = json_match.group(1)
-                analysis_json = json.loads(only_json)
+                try:
+                    analysis_json = json.loads(only_json)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"⚠️ Invalid JSON for article {idx}: {e}")
+                    logger.warning(f"Raw response from Perplexity: {analysis_content}")
+                    continue
 
                 if not analysis_json.get("summary"):
                     logger.warning(f"⚠️ Empty summary for {url}")
@@ -383,9 +388,6 @@ Responde solo con el objeto JSON.
 
             except asyncio.TimeoutError:
                 logger.warning(f"⏱️ Timeout analyzing article {idx}: {url}")
-                continue
-            except json.JSONDecodeError as e:
-                logger.warning(f"⚠️ Invalid JSON for article {idx}: {e}")
                 continue
             except Exception as e:
                 logger.error(f"❌ Error processing article {idx} ({url}): {e}")
