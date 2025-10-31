@@ -1,0 +1,571 @@
+# main.py
+import asyncio, os, hashlib
+from io import BytesIO
+from collections import Counter
+from typing import List, Optional, Dict, Any, Literal
+
+from fastapi import FastAPI, HTTPException, Response, Body
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.routing import APIRoute
+from pydantic import BaseModel, HttpUrl, Field
+from weasyprint import HTML
+
+# 🔌 Nuestros servicios nuevos
+# - services.perplexity.analyze_text: analiza texto y devuelve JSON (sentiment/topics/summary + extras)
+# - services.fetcher.fetch_page: obtiene titulo/descripcion/imagen/texto de una URL
+from services.perplexity import analyze_text
+from services.fetcher import fetch_page
+
+# ──────────────────────────────────────────────────────────────────────────────
+# App & CORS
+# ──────────────────────────────────────────────────────────────────────────────
+app = FastAPI(title="Percepción Digital API (JSON + PDF)")
+
+ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN")
+ALLOWED_ORIGINS = [ALLOWED_ORIGIN] if ALLOWED_ORIGIN else [
+    "https://superb-mousse-452212.netlify.app",
+    "http://localhost:5173",
+]
+NETLIFY_REGEX = r"https://([a-z0-9-]+\.)?netlify\.app$"
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=NETLIFY_REGEX,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    allow_credentials=False,
+    max_age=86400,
+)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Config
+# ──────────────────────────────────────────────────────────────────────────────
+MAX_CONCURRENCY   = int(os.getenv("MAX_CONCURRENCY", "5"))
+PER_URL_DEADLINE  = int(os.getenv("PER_URL_DEADLINE", "5"))
+OG_TIMEOUT        = float(os.getenv("OG_TIMEOUT", "12"))
+MIN_URLS          = int(os.getenv("MIN_URLS", "5"))
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Modelos (sustituyen a schemas.py)
+# ──────────────────────────────────────────────────────────────────────────────
+class Politician(BaseModel):
+    name: str = Field(..., description="Nombre del personaje")
+    office: Optional[str] = Field(None, description="Cargo opcional")
+
+class PostAI(BaseModel):
+    summary: str
+    topic: Optional[str] = None
+    subtopics: List[str] = []
+    sentiment: Literal["negative", "neutral", "positive"] = "neutral"
+    stance: Literal["against", "neutral", "favor", "none"] = "none"
+    entities: List[str] = []
+    toxicity: int = 0
+    risk_note: Optional[str] = None
+    opportunities: List[str] = []
+
+class PostMeta(BaseModel):
+    platform: str
+    url: str
+    title: Optional[str] = None
+    description: Optional[str] = None
+    author_name: Optional[str] = None
+    published_at: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    debug: Optional[str] = None
+
+class PostResult(BaseModel):
+    meta: PostMeta
+    ai: PostAI
+
+class AnalyzeRequest(BaseModel):
+    urls: List[HttpUrl]
+    politician: Politician
+
+class AnalyzeResponse(BaseModel):
+    politician: Politician
+    results: List[PostResult]
+    summary: Dict[str, Any]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Utils
+# ──────────────────────────────────────────────────────────────────────────────
+def sanitize_url(u: str) -> str:
+    u = (u or "").strip()
+    # pequeños saneos para evitar variaciones triviales
+    if u.startswith("http://"):
+        u = "https://" + u[len("http://"):]
+    return u
+
+def detect_platform(u: str) -> str:
+    s = u.lower()
+    if "facebook.com" in s: return "facebook"
+    if "instagram.com" in s: return "instagram"
+    if "twitter.com" in s or "x.com" in s: return "twitter"
+    if "tiktok.com" in s: return "tiktok"
+    if "youtube.com" in s or "youtu.be" in s: return "youtube"
+    return "web"
+
+def safe_text(*parts):
+    for p in parts:
+        if p and isinstance(p, str) and len(p.strip()) >= 40:
+            return p.strip()
+    for p in parts:
+        if p and isinstance(p, str) and len(p.strip()) > 0:
+            return p.strip()
+    return ""
+
+def _escape(s):
+    try:
+        return (s or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+    except Exception:
+        return ""
+
+def _clip(s: Optional[str], n: int) -> str:
+    if not s: return ""
+    s = str(s)
+    return s if len(s) <= n else s[:n]
+
+_TEXT_CACHE: Dict[str, Dict[str, Any]] = {}
+
+def build_summary_counts(results: List[PostResult]):
+    sentiments = Counter(getattr(r.ai, "sentiment", None) for r in results if getattr(r, "ai", None))
+    stances    = Counter(getattr(r.ai, "stance", None)    for r in results if getattr(r, "ai", None))
+    if None in sentiments: sentiments.pop(None)
+    if None in stances: stances.pop(None)
+    entities   = Counter(e for r in results for e in (getattr(r.ai, "entities", []) or []))
+    total = len(results)
+    predominant = max(sentiments, key=sentiments.get) if sentiments else "neutral"
+    top_entities = [f"{name} ({cnt})" for name, cnt in entities.most_common(5)]
+    return {"total": total, "sentiments": dict(sentiments), "predominant": predominant, "stances": dict(stances), "top_entities": top_entities}
+
+def make_short_exec_summary(politician_name: str, counts: dict) -> str:
+    sents = counts.get("sentiments") or {}
+    st    = counts.get("stances") or {}
+    ents  = counts.get("top_entities") or []
+    return (
+        f"Se analizaron {counts.get('total',0)} publicaciones sobre {politician_name}.\n"
+        f"Sentimiento predominante: {counts.get('predominant','neutral')}. Distribución: "
+        + (" ".join(f"{k}:{v}" for k,v in sents.items()) or "—") + "\n"
+        f"Posturas: " + (" ".join(f"{k}:{v}" for k,v in st.items()) or "—") + "\n"
+        f"Entidades destacadas: " + (", ".join(ents) or "—") + "\n"
+        "Nota: Análisis basado en contenido público; redes sociales pueden requerir APIs oficiales."
+    )
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PDF helpers (reutilizados y saneados)
+# ──────────────────────────────────────────────────────────────────────────────
+def generate_report_html(politician: dict, posts: list[dict], summary: dict) -> str:
+    css = """
+    <style>
+      @page { size: A4; margin: 24mm 20mm; }
+      body { font-family: Helvetica, Arial, sans-serif; color:#111; }
+      h1 { font-size: 24px; margin: 0; }
+      h2 { font-size: 18px; margin: 20px 0 8px; }
+      .muted { color: #555; }
+      .hr { border-top: 1px solid #eee; margin: 16px 0; }
+      .card { border: 1px solid #e5e5e5; border-radius: 12px; padding: 12px 14px; margin: 10px 0; }
+      .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid #ddd; }
+      .meta { font-size: 12px; color: #444; }
+      .caption { white-space: pre-wrap; }
+      .footer { font-size: 11px; color: #777; margin-top: 24px; }
+      a { color: #0b57d0; text-decoration: none; }
+    </style>
+    """
+    head = f"""
+    <h1>Percepción Digital</h1>
+    <div class="muted">
+      Personaje: <strong>{_escape(politician.get('name'))}</strong>
+      {" — " + _escape(politician.get("office")) if politician.get("office") else ""}
+    </div>
+    <div class="hr"></div>
+    """
+    short = summary.get("short_text") or ""
+    sents = summary.get("sentiments") or {}
+    stances = summary.get("stances") or {}
+    ents = summary.get("top_entities") or []
+    resumen = f"""
+    <h2>Resumen ejecutivo</h2>
+    <ul>
+      <li><b>Total:</b> {summary.get('total', 0)}</li>
+      <li><b>Sentimiento predominante:</b> {summary.get('predominant') or "—"}</li>
+      <li><b>Distribución:</b> {" ".join(f"{k}:{v}" for k,v in sents.items()) or "—"}</li>
+      <li><b>Posturas:</b> {" ".join(f"{k}:{v}" for k,v in stances.items()) or "—"}</li>
+      <li><b>Top entidades:</b> {", ".join(ents) or "—"}</li>
+    </ul>
+    {f'<p style="margin-top:8px">{_escape(short)}</p>' if short else ""}
+    <div class="hr"></div>
+    """
+    rows = []
+    for p in posts:
+        meta = p.get("meta", {})
+        ai   = p.get("ai", {})
+        plat = (meta.get("platform") or "web").capitalize()
+        url  = _escape(meta.get("url") or "")
+        dt   = _escape(meta.get("published_at") or "")
+        author = _escape(meta.get("author_name") or "")
+        cap  = _escape(meta.get("description") or meta.get("title") or "")
+        smry = _escape(ai.get("summary") or "")
+        topic = _escape(ai.get("topic") or "")
+        subs  = ", ".join(ai.get("subtopics") or [])
+        ents2 = ", ".join(ai.get("entities") or [])
+        opps  = " · ".join(ai.get("opportunities") or [])
+        sent  = _escape(ai.get("sentiment") or "neutral")
+        tox   = str(ai.get("toxicity") or 0)
+        risk  = _escape(ai.get("risk_note") or "")
+
+        row = f"""
+        <div class="card">
+          <div class="row">
+            <div class="pill">{plat}</div>
+            {f'<div class="meta">{dt}</div>' if dt else ''}
+            {f'<div class="pill">@{author}</div>' if author else ''}
+            <div class="pill">Sentimiento: {sent}</div>
+            <div class="pill">Riesgo: {tox}/100</div>
+          </div>
+          <div class="meta"><a href="{url}">Ver publicación</a></div>
+          {f'<div class="caption">{cap}</div>' if cap else ''}
+          <div class="meta"><strong>Resumen:</strong> {smry}</div>
+          <div class="meta"><strong>Tema:</strong> {topic} — <em>{_escape(subs)}</em></div>
+          <div class="meta"><strong>Entidades:</strong> {ents2}</div>
+          {f'<div class="meta"><strong>Oportunidades:</strong> {opps}</div>' if opps else ''}
+          {f'<div class="meta"><strong>Nota de riesgo:</strong> {risk}</div>' if risk else ''}
+        </div>
+        """
+        rows.append(row)
+    footer = '<div class="footer">Metodología: OG/Reader + IA (Perplexity). Datos públicos; métricas exactas requieren APIs oficiales.</div>'
+    body = "\n".join(rows)
+    return f"<!doctype html><html><head><meta charset='utf-8'>{css}</head><body>{head}{resumen}{body}{footer}</body></html>"
+
+def build_pdf_html_from_results(politician: dict, results: list, summary: dict | None) -> str:
+    css = """
+    <style>
+      @page { size: A4; margin: 24mm 20mm; }
+      body { font-family: Helvetica, Arial, sans-serif; color:#111; }
+      h1 { font-size: 24px; margin: 0 0 6px 0; }
+      h2 { font-size: 18px; margin: 18px 0 8px; }
+      .hr { border-top: 1px solid #eee; margin: 12px 0; }
+      .muted { color:#555; }
+      .card { border:1px solid #e5e5e5; border-radius:12px; padding:12px 14px; margin:10px 0; }
+      .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+      .pill { font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid #ddd; }
+      .meta { font-size:12px; color:#444; }
+      .caption { white-space: pre-wrap; }
+      a { color:#0b57d0; text-decoration:none; }
+      ul { margin: 8px 0; padding-left: 18px; }
+    </style>
+    """
+    name = _escape((politician or {}).get("name") or "")
+    office = _escape((politician or {}).get("office") or "")
+    head = (
+        "<h1>Percepción Digital</h1>"
+        f"<div class='muted'>Personaje: <b>{name}</b>{(' — '+office) if office else ''}</div>"
+        "<div class='hr'></div>"
+    )
+    resumen_html = ""
+    if summary:
+        sentiments = " ".join(f"{k}:{v}" for k, v in (summary.get("sentiments") or {}).items()) or "—"
+        stances    = " ".join(f"{k}:{v}" for k, v in (summary.get("stances") or {}).items()) or "—"
+        topents    = ", ".join(summary.get("top_entities") or []) or "—"
+        short      = _escape(summary.get("short_text") or "")
+        resumen_html = (
+            "<h2>Resumen ejecutivo</h2>"
+            "<ul>"
+            f"<li><b>Total:</b> {summary.get('total', 0)}</li>"
+            f"<li><b>Sentimiento predominante:</b> {_escape(summary.get('predominant') or '')}</li>"
+            f"<li><b>Distribución:</b> {sentiments}</li>"
+            f"<li><b>Posturas:</b> {stances}</li>"
+            f"<li><b>Top entidades:</b> {topents}</li>"
+            "</ul>"
+            + (f"<p>{short}</p>" if short else "")
+            + "<div class='hr'></div>"
+        )
+    cards = []
+    for r in (results or []):
+        meta = r.get("meta", {}) or {}
+        ai   = r.get("ai", {}) or {}
+        plat = _escape((meta.get("platform") or "web").capitalize())
+        url  = _escape(meta.get("url") or "")
+        dt   = _escape(meta.get("published_at") or "")
+        author = _escape(meta.get("author_name") or "")
+        cap  = _escape(meta.get("description") or meta.get("title") or "")
+        smry = _escape(ai.get("summary") or "")
+        topic = _escape(ai.get("topic") or "")
+        subs  = ", ".join(ai.get("subtopics") or [])
+        ents  = ", ".join(ai.get("entities") or [])
+        sent  = _escape(ai.get("sentiment") or "neutral")
+        tox   = str(ai.get("toxicity") or 0)
+        risk  = _escape(ai.get("risk_note") or "")
+        opps  = " · ".join(ai.get("opportunities") or [])
+        dt_html      = f'<div class="meta">{dt}</div>' if dt else ""
+        handle_html  = f'<div class="pill">@{author}</div>' if author else ""
+        cap_html     = f'<div class="caption" style="margin-top:6px">{cap}</div>' if cap else ""
+        smry_html    = f'<div class="meta"><b>Resumen:</b> {smry}</div>' if smry else ""
+        subs_html    = f" — <em>{_escape(subs)}</em>" if subs else ""
+        ents_html    = f'<div class="meta"><b>Entidades:</b> {ents}</div>' if ents else ""
+        opps_html    = f'<div class="meta"><b>Oportunidades:</b> {_escape(opps)}</div>' if opps else ""
+        risk_html    = f'<div class="meta"><b>Nota de riesgo:</b> {risk}</div>' if risk else ""
+        card = (
+            '<div class="card">'
+            '<div class="row">'
+            f'<div class="pill">{plat}</div>'
+            f"{dt_html}"
+            f"{handle_html}"
+            f'<div class="pill">Sentimiento: {sent}</div>'
+            f'<div class="pill">Riesgo: {tox}/100</div>'
+            '</div>'
+            f'<div class="meta"><a href="{url}">Ver publicación</a></div>'
+            f"{cap_html}"
+            f"{smry_html}"
+            f'<div class="meta"><b>Tema:</b> {topic}{subs_html}</div>'
+            f"{ents_html}"
+            f"{opps_html}"
+            f"{risk_html}"
+            "</div>"
+        )
+        cards.append(card)
+    html = (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        f"{css}"
+        "</head><body>"
+        f"{head}"
+        f"{resumen_html}"
+        f"{''.join(cards)}"
+        "</body></html>"
+    )
+    return html
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Endpoints básicos / diagnóstico / PDF
+# ──────────────────────────────────────────────────────────────────────────────
+@app.get("/")
+def root_get():
+    return {
+        "ok": True,
+        "service": "Percepción Digital API",
+        "endpoints": ["/health", "/analyze-json", "/analyze-pdf", "/diag-url", "/routes", "/render-pdf", "/analyze-chunk"],
+    }
+
+@app.head("/")
+def root_head():
+    return Response(status_code=200)
+
+@app.get("/health")
+def health_get():
+    return {"ok": True}
+
+@app.head("/health")
+def health_head():
+    return Response(status_code=200)
+
+@app.get("/routes")
+def list_routes():
+    return {
+        "routes": [
+            {"path": r.path, "methods": sorted(list(r.methods))}
+            for r in app.routes if isinstance(r, APIRoute)
+        ]
+    }
+
+@app.get("/diag-url")
+async def diag_url(url: str):
+    try:
+        per_url_deadline = min(int(os.getenv("DIAG_DEADLINE", "18")), 25)
+        safe = sanitize_url(url)
+        page = await asyncio.wait_for(asyncio.to_thread(lambda: fetch_page(safe)), timeout=per_url_deadline)
+        ai_preview = _clip((page.get("text") or "").strip().replace("\n", " "), 240) or "Sin texto disponible"
+        return {
+            "ok": True,
+            "final_url": page.get("url"),
+            "platform": detect_platform(page.get("url") or safe),
+            "len_best": len(page.get("text") or ""),
+            "og": {
+                "title": page.get("title"),
+                "description": page.get("description"),
+                "image": page.get("image"),
+            },
+            "ai_why": "ok" if len(page.get("text") or "") >= 160 else "short",
+            "ai_preview": ai_preview
+        }
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"{type(e).__name__}:{str(e)[:160]}"},
+                            status_code=200)
+
+@app.head("/diag-url")
+def diag_url_head():
+    return Response(status_code=200)
+
+@app.options("/diag-url")
+def diag_url_opts():
+    return Response(status_code=200)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Pipeline de análisis
+# ──────────────────────────────────────────────────────────────────────────────
+async def _analyze_all(req: AnalyzeRequest) -> List[PostResult]:
+    sem = asyncio.Semaphore(MAX_CONCURRENCY)
+
+    async def process(u: str):
+        async with sem:
+            safe_u = sanitize_url(str(u))
+            try:
+                page = await asyncio.wait_for(asyncio.to_thread(lambda: fetch_page(safe_u)), timeout=PER_URL_DEADLINE)
+                text = page.get("text") or ""
+                og = {
+                    "title": page.get("title"),
+                    "description": page.get("description"),
+                    "author_name": None,
+                    "published_at": None,
+                    "image": page.get("image"),
+                }
+                final_u = page.get("url") or safe_u
+            except Exception:
+                text, og, final_u = "", {}, safe_u
+
+            # Fallbacks con algo de valor
+            if not text or len(text) < 160:
+                brief = safe_text(og.get("description"), og.get("title"))
+                if brief:
+                    ai_dict = {
+                        "summary": brief,
+                        "topic": "desconocido",
+                        "subtopics": [],
+                        "sentiment": "neutral",
+                        "stance": "none",
+                        "entities": [req.politician.name],
+                        "toxicity": 0,
+                        "risk_note": None,
+                        "opportunities": [],
+                    }
+                    why = "og-brief"
+                else:
+                    ai_dict = {
+                        "summary": "Contenido insuficiente para análisis automático.",
+                        "topic": "desconocido",
+                        "subtopics": [],
+                        "sentiment": "neutral",
+                        "stance": "none",
+                        "entities": [req.politician.name],
+                        "toxicity": 0,
+                        "risk_note": None,
+                        "opportunities": [],
+                    }
+                    why = "short"
+            else:
+                clip = _clip(text, 2300)
+                h = hashlib.sha1(clip.encode("utf-8", "ignore")).hexdigest()
+                if h in _TEXT_CACHE:
+                    ai_dict, why = _TEXT_CACHE[h], "cache"
+                else:
+                    try:
+                        # 🔎 Aquí llamamos a Perplexity para análisis con JSON estructurado
+                        analysis = analyze_text(clip)
+                        # Mapear a nuestro PostAI
+                        sent_map = {-1: "negative", 0: "neutral", 1: "positive"}
+                        ai_dict = {
+                            "summary": analysis.get("summary", ""),
+                            "topic": analysis.get("topic"),
+                            "subtopics": analysis.get("subtopics", []),
+                            "sentiment": sent_map.get(int(analysis.get("sentiment", 0)), "neutral"),
+                            "stance": analysis.get("stance", "none"),
+                            "entities": analysis.get("entities", []),
+                            "toxicity": analysis.get("toxicity", 0),
+                            "risk_note": analysis.get("risk_note"),
+                            "opportunities": analysis.get("opportunities", []),
+                        }
+                        why = "perplexity"
+                    except Exception as e:
+                        ai_dict, why = {
+                            "summary": (_clip(text, 400) + "…") if text else "Sin texto disponible",
+                            "topic": "general", "subtopics": [], "sentiment": "neutral", "stance": "none",
+                            "entities": [req.politician.name], "toxicity": 0, "risk_note": None, "opportunities": [],
+                        }, f"analyze-exception:{type(e).__name__}"
+                    _TEXT_CACHE[h] = ai_dict
+
+            meta = PostMeta(
+                platform=detect_platform(final_u),
+                url=final_u,
+                title=og.get("title"),
+                description=og.get("description"),
+                author_name=og.get("author_name"),
+                published_at=og.get("published_at"),
+                thumbnail_url=og.get("image"),
+                debug=f"len={len(text or '')}|why={why}",
+            )
+            ai = PostAI(**ai_dict)
+            return PostResult(meta=meta, ai=ai)
+
+    tasks = [process(str(u)) for u in req.urls]
+    return await asyncio.gather(*tasks)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Endpoints principales
+# ──────────────────────────────────────────────────────────────────────────────
+@app.post("/analyze-json", response_model=AnalyzeResponse)
+async def analyze_json(req: AnalyzeRequest):
+    if len(req.urls) < MIN_URLS:
+        raise HTTPException(400, detail=f"Se requieren ≥{MIN_URLS} URLs; recibidas: {len(req.urls)}")
+
+    results = await _analyze_all(req)
+    counts = build_summary_counts(results)
+    short_text = make_short_exec_summary(req.politician.name, counts)
+    summary = {**counts, "short_text": short_text}
+
+    return {
+        "politician": req.politician,
+        "results": results,
+        "summary": summary,
+    }
+
+@app.post("/analyze-chunk")
+async def analyze_chunk(req: AnalyzeRequest):
+    results = await _analyze_all(req)
+    return {"results": [r.model_dump() for r in results]}
+
+@app.options("/analyze-chunk")
+def analyze_chunk_options():
+    return Response(status_code=200)
+
+@app.head("/analyze-chunk")
+def analyze_chunk_head():
+    return Response(status_code=200)
+
+def _build_pdf_html(politician: dict, results: list, summary: dict | None) -> str:
+    return build_pdf_html_from_results(politician, results, summary)
+
+@app.post("/analyze-pdf")
+async def analyze_pdf(req: AnalyzeRequest):
+    if len(req.urls) < MIN_URLS:
+        raise HTTPException(400, detail=f"Se requieren ≥{MIN_URLS} URLs; recibidas: {len(req.urls)}")
+
+    results = await _analyze_all(req)
+    counts = build_summary_counts(results)
+    short_text = make_short_exec_summary(req.politician.name, counts)
+    summary = {**counts, "short_text": short_text}
+
+    posts = [r.model_dump() for r in results]
+    polit = req.politician.model_dump()
+
+    html = _build_pdf_html(polit, posts, summary)
+    pdf_bytes = HTML(string=html).write_pdf()
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="percepcion_{(polit.get("name") or "").replace(" ","_")}.pdf"'}
+    )
+
+@app.post("/render-pdf")
+def render_pdf(payload: dict = Body(...)):
+    politician = payload.get("politician") or {}
+    results    = payload.get("results") or []
+    summary    = payload.get("summary")
+    html = _build_pdf_html(politician, results, summary)
+    pdf_bytes = HTML(string=html).write_pdf()
+    filename = f"percepcion_{(politician.get('name') or 'reporte').replace(' ', '_')}.pdf"
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )

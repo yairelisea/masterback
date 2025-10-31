@@ -4,11 +4,12 @@ from fastapi import APIRouter, Header, HTTPException, Depends, Request, Backgrou
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_session, SessionLocal
-from ..models import Campaign
-from ..schemas import CampaignCreate, CampaignOut
+from ..models import Campaign, IngestedItem, Analysis, SourceLink, ItemStatus
+from ..schemas import CampaignCreate, CampaignOut, UrlsToAnalyze
 from ..deps import get_current_user
 from ..services.query_builder import build_query_variants
 from ..services.ingest_auto import kickoff_campaign_ingest
+from ..services.perplexity_service import perplexity_service
 from .. import models, schemas
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
@@ -181,3 +182,50 @@ async def refresh_campaign(
         raise HTTPException(status_code=403, detail="Forbidden")
     background_tasks.add_task(_refresh_campaign_task, campaign_id)
     return {"accepted": True, "campaignId": campaign_id, "mode": "async"}
+
+@router.post("/{campaign_id}/urls")
+async def add_urls_to_campaign(
+    campaign_id: str,
+    payload: UrlsToAnalyze,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    c = await db.get(Campaign, campaign_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    if (current_user.get("role") != "admin") and (c.userId != current_user.get("id")):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    analyzed_items = await perplexity_service.analyze_urls(
+        urls=[str(url) for url in payload.urls],
+        campaign_name=c.name,
+    )
+
+    for item_data in analyzed_items:
+        source_link = SourceLink(
+            campaignId=c.id,
+            url=item_data["url"],
+        )
+        ingested_item = IngestedItem(
+            campaignId=c.id,
+            sourceId=source_link.id,
+            title=item_data["title"],
+            url=item_data["url"],
+            publishedAt=item_data.get("publishedAt"),
+            status=ItemStatus.PROCESSED,
+        )
+        analysis = Analysis(
+            campaignId=c.id,
+            itemId=ingested_item.id,
+            sentiment=item_data.get("sentiment_score"),
+            tone=item_data.get("sentiment_label"),
+            topics=item_data.get("topics", []),
+            summary=item_data.get("summary", ""),
+        )
+        ingested_item.analysis = analysis
+        db.add(source_link)
+        db.add(ingested_item)
+
+    await db.commit()
+
+    return {"accepted": True, "processed_items": len(analyzed_items)}

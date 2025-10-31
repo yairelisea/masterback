@@ -296,6 +296,104 @@ Responde solo con el objeto JSON.
         logger.info(f"✅ Analysis complete: {len(analyzed_articles)}/{len(search_results.results)} successful")
         return analyzed_articles
 
+    async def analyze_urls(
+        self,
+        urls: List[str],
+        campaign_name: str,
+    ) -> List[Dict[str, Any]]:
+        logger.info(f"🔎 Analyzing {len(urls)} URLs for campaign '{campaign_name}'")
+
+        analyzed_articles = []
+        for idx, url in enumerate(urls):
+            try:
+                content = await asyncio.wait_for(
+                    _get_url_content(url),
+                    timeout=15.0
+                )
+
+                if not content or len(content.strip()) < 100:
+                    logger.warning(f"⚠️ Article {idx} has insufficient content: {url}")
+                    continue
+
+                analysis_prompt = f"""
+Analiza el siguiente texto sobre política mexicana.
+Si '{campaign_name}' NO tiene relevancia, responde solo {{}}
+Si SÍ es relevante, responde con este objeto JSON:
+- summary: resumen conciso (2-3 frases)
+- sentiment_label: 'Positivo', 'Negativo' o 'Neutral'
+- sentiment_score: de -1.0 a 1.0
+- topics: 3-5 temas principales
+- key_points: 2-3 citas o puntos clave
+
+Texto:
+{content[:4000]}
+
+Responde solo con el objeto JSON.
+"""
+
+                chat_response = await asyncio.wait_for(
+                    self.client.chat.completions.create(
+                        model="sonar-reasoning",
+                        messages=[
+                            {"role": "system", "content": "Eres un analista de medios que responde solo con objetos JSON definidos por el usuario."},
+                            {"role": "user", "content": analysis_prompt},
+                        ],
+                        response_format={
+                            "type": "json_schema",
+                            "json_schema": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "summary": {"type": "string"},
+                                        "sentiment_label": {"type": "string", "enum": ["Positivo", "Negativo", "Neutral"]},
+                                        "sentiment_score": {"type": "number"},
+                                        "topics": {"type": "array", "items": {"type": "string"}},
+                                        "key_points": {"type": "array", "items": {"type": "string"}}
+                                    },
+                                    "required": ["summary", "sentiment_label", "sentiment_score", "topics", "key_points"]
+                                }
+                            }
+                        },
+                    ),
+                    timeout=20.0
+                )
+
+                analysis_content = chat_response.choices[0].message.content
+
+                json_match = re.search(r"({.*})", analysis_content, re.DOTALL)
+                if not json_match:
+                    logger.warning(f"⚠️ No JSON found in IA response for {url}")
+                    continue
+
+                only_json = json_match.group(1)
+                analysis_json = json.loads(only_json)
+
+                if not analysis_json.get("summary"):
+                    logger.warning(f"⚠️ Empty summary for {url}")
+                    continue
+
+                analyzed_articles.append({
+                    "title": url,
+                    "url": url,
+                    "publishedAt": None,
+                    **analysis_json
+                })
+
+                logger.debug(f"✅ Analyzed article {idx + 1}/{len(urls)}")
+
+            except asyncio.TimeoutError:
+                logger.warning(f"⏱️ Timeout analyzing article {idx}: {url}")
+                continue
+            except json.JSONDecodeError as e:
+                logger.warning(f"⚠️ Invalid JSON for article {idx}: {e}")
+                continue
+            except Exception as e:
+                logger.error(f"❌ Error processing article {idx} ({url}): {e}")
+                continue
+
+        logger.info(f"✅ Analysis complete: {len(analyzed_articles)}/{len(urls)} successful")
+        return analyzed_articles
+
     # ✅ Funciones de reportes (las actualizaremos en Fase 3)
     async def get_daily_actor_summary(self, actor_name: str) -> Dict[str, Any]:
         """Placeholder - se actualizará en Fase 3"""

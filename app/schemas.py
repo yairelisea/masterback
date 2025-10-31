@@ -251,3 +251,6 @@ class CampaignUpdate(BaseModel):
 
     class Config:
         populate_by_name = True
+
+class UrlsToAnalyze(BaseModel):
+    urls: List[HttpUrl]
