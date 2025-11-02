@@ -1,4 +1,3 @@
-# app/services/perplexity_service.py
 from __future__ import annotations
 import os
 import httpx
@@ -344,7 +343,14 @@ Prioriza extracción mixta (prensa y RS), informaciones no duplicadas, e identif
             analysis_content = chat_response.choices[0].message.content
             print(f"\n==REPORTE SEMANAL IA PARA {actor_name}==\n{analysis_content}\n")
 
-            analysis_json = json.loads(analysis_content)
+            # Extrae el JSON de la respuesta (puede venir con bloques <think>)
+            json_match = re.search(r"({.*})", analysis_content, re.DOTALL)
+            if not json_match:
+                print(f"No se encontró JSON en la respuesta del reporte semanal para {actor_name}")
+                return {"error": "No se pudo extraer el JSON de la respuesta"}
+
+            only_json = json_match.group(1)
+            analysis_json = json.loads(only_json)
             return analysis_json
 
         except PerplexityError as e:
@@ -433,8 +439,14 @@ Prioriza velocidad y relevancia, omite duplicados y enfócate únicamente en hec
             analysis_content = chat_response.choices[0].message.content
             print(f"\n==RESPUESTA IA PARA {actor_name}==\n{analysis_content}\n")
 
-            # El contenido ya debería ser un JSON válido gracias a response_format
-            analysis_json = json.loads(analysis_content)
+            # Extrae el JSON de la respuesta (puede venir con bloques <think>)
+            json_match = re.search(r"({.*})", analysis_content, re.DOTALL)
+            if not json_match:
+                print(f"No se encontró JSON en la respuesta del resumen diario para {actor_name}")
+                return {"error": "No se pudo extraer el JSON de la respuesta"}
+
+            only_json = json_match.group(1)
+            analysis_json = json.loads(only_json)
             return analysis_json
 
         except PerplexityError as e:

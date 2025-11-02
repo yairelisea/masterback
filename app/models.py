@@ -253,3 +253,77 @@ class AlertNotification(Base):
     alertId: Mapped[str] = mapped_column(String(40), ForeignKey("alerts.id"), index=True)
     content: Mapped[dict] = mapped_column(JSON, nullable=False)
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+class ReportType(str, enum.Enum):
+    """Tipos de reportes disponibles"""
+    WEEKLY = "weekly"
+    DAILY = "daily"
+
+
+class ActorReport(Base):
+    """
+    Almacena reportes históricos de actores políticos.
+    Cada vez que se genera un reporte, se guarda aquí.
+    Esto permite:
+    - Ver histórico completo de un actor
+    - Comparar reportes en el tiempo
+    - No regenerar reportes recientes (cache)
+    """
+    __tablename__ = "actor_reports"
+
+    id: Mapped[str] = mapped_column(
+        String, 
+        primary_key=True, 
+        default=lambda: str(uuid.uuid4())
+    )
+    
+    actorName: Mapped[str] = mapped_column(
+        String, 
+        index=True,
+        nullable=False,
+        comment="Nombre del actor político (ej: 'Samuel García')"
+    )
+    
+    reportType: Mapped[ReportType] = mapped_column(
+        SQLEnum(ReportType),
+        index=True,
+        nullable=False,
+        comment="Tipo de reporte: 'weekly' o 'daily'"
+    )
+    
+    reportData: Mapped[dict] = mapped_column(
+        JSON,
+        nullable=False,
+        comment="Datos completos del reporte en formato JSON"
+    )
+    
+    summary: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+        comment="Resumen rápido del reporte para búsquedas"
+    )
+    
+    createdAt: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        index=True,
+        nullable=False
+    )
+    
+    # Metadatos adicionales
+    generationTime: Mapped[float | None] = mapped_column(
+        nullable=True,
+        comment="Tiempo que tomó generar el reporte (segundos)"
+    )
+    
+    itemCount: Mapped[int | None] = mapped_column(
+        nullable=True,
+        comment="Número de items/evidencias en el reporte"
+    )
+
+    def __repr__(self):
+        return f"<ActorReport {self.reportType.value} for {self.actorName} at {self.createdAt}>"
+
+
+
+
