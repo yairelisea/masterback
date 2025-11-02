@@ -1,16 +1,6 @@
-
 from __future__ import annotations
 
 import enum
-import uuid
-from datetime import datetime
-from typing import Optional, List
-
-class PlanTier(enum.Enum):
-    BASIC = "BASIC"        # 1 auto update / day
-    PRO = "PRO"            # 3 auto updates / day
-    UNLIMITED = "UNLIMITED"# unlimited
-
 import uuid
 from datetime import datetime, timezone
 
@@ -20,16 +10,19 @@ from sqlalchemy import (
     Boolean,
     Integer,
     Float,
-    Enum as SQLEnum,
     ForeignKey,
     JSON,
     Text,
     Enum,
 )
-from sqlalchemy.dialects.postgresql import JSON
-from sqlalchemy.orm import Mapped, mapped_column, relationship, DeclarativeBase
+from sqlalchemy.orm import Mapped, mapped_column, relationship, declarative_base
 
-Base = DeclarativeBase()
+Base = declarative_base()
+
+class PlanTier(enum.Enum):
+    BASIC = "BASIC"        # 1 auto update / day
+    PRO = "PRO"            # 3 auto updates / day
+    UNLIMITED = "UNLIMITED"# unlimited
 
 # ------------------------
 # User
@@ -67,11 +60,8 @@ class Campaign(Base):
 
     # Admin & subscription
     plan: Mapped[PlanTier] = mapped_column(Enum(PlanTier), default=PlanTier.BASIC)
-    # Feature flags at user level (overrides): {"comparator": true, "connectors": false}
-
 
     # Auto-update scheduling
-    plan: Mapped[PlanTier] = mapped_column(Enum(PlanTier), default=PlanTier.BASIC)
     autoEnabled: Mapped[bool] = mapped_column(Boolean, default=True)
     autoRunsToday: Mapped[int] = mapped_column(Integer, default=0)
     autoLastReset: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -291,7 +281,7 @@ class ActorReport(Base):
     )
     
     reportType: Mapped[ReportType] = mapped_column(
-        SQLEnum(ReportType),
+        Enum(ReportType),
         index=True,
         nullable=False,
         comment="Tipo de reporte: 'weekly' o 'daily'"
@@ -329,7 +319,3 @@ class ActorReport(Base):
 
     def __repr__(self):
         return f"<ActorReport {self.reportType.value} for {self.actorName} at {self.createdAt}>"
-
-
-
-
