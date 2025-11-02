@@ -29,7 +29,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship, DeclarativeBase
 
-Base = declarative_base()
+Base = DeclarativeBase()
 
 # ------------------------
 # User
