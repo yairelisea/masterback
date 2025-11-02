@@ -1,6 +1,10 @@
+
 from __future__ import annotations
 
 import enum
+import uuid
+from datetime import datetime
+from typing import Optional, List
 
 class PlanTier(enum.Enum):
     BASIC = "BASIC"        # 1 auto update / day
@@ -16,12 +20,14 @@ from sqlalchemy import (
     Boolean,
     Integer,
     Float,
+    Enum as SQLEnum,
     ForeignKey,
     JSON,
     Text,
     Enum,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship, declarative_base
+from sqlalchemy.dialects.postgresql import JSON
+from sqlalchemy.orm import Mapped, mapped_column, relationship, DeclarativeBase
 
 Base = declarative_base()
 
