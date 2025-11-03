@@ -1,14 +1,112 @@
+# app/routers/ai_analysis.py
+from __future__ import annotations
 
-
-
+from fastapi import APIRouter, Query, Header, HTTPException, Request, Depends
+from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
-from ..db import get_session
-from ..models import ActorReport, ReportType
 import time
 
-# ... (mantener imports existentes)
+# Importar el servicio de Perplexity
+from ..services.perplexity_service import perplexity_service
+from ..services.query_builder import build_basic_query
+from ..db import get_session
+from ..models import ActorReport, ReportType
+
+# Definir el router
+router = APIRouter(prefix="/ai", tags=["ai"])
+
+# -----------------------------------------------------------------------------------
+# Endpoint principal - Análisis de noticias
+# -----------------------------------------------------------------------------------
+
+@router.get("/analyze-news")
+async def analyze_news(
+    request: Request,
+    q: str = Query(..., description="Consulta (ej. nombre del actor político)"),
+    size: int = Query(35, ge=1, le=100),
+    days_back: int = Query(30, ge=1, le=60),
+    lang: str = Query("es-419"),
+    country: str = Query("MX"),
+    overall: bool = Query(True, description="Si true, devuelve resumen agregado (funcionalidad no disponible con Perplexity)"),
+    userId: Optional[str] = None,
+    x_user_id: Optional[str] = Header(default=None),
+):
+    """
+    1) Busca y analiza noticias usando el servicio de Perplexity.
+    2) Devuelve los resultados analizados.
+    """
+    effective_user = x_user_id or userId or "anonymous"
+
+    # Calcular fechas para la búsqueda en Perplexity
+    end_date_dt = datetime.utcnow()
+    start_date_dt = end_date_dt - timedelta(days=days_back)
+    
+    # Formato de fecha para la API de Perplexity: YYYY-MM-DD
+    start_date_str_api = start_date_dt.strftime("%Y-%m-%d")
+    end_date_str_api = end_date_dt.strftime("%Y-%m-%d")
+
+    # Formato de fecha para el query string: YYYY-MM-DD
+    start_date_str_query = start_date_dt.strftime("%Y-%m-%d")
+    end_date_str_query = end_date_dt.strftime("%Y-%m-%d")
+
+    # Construir una consulta más específica
+    basic_q = build_basic_query(actor=q, campaign_name=q, city_keywords=[country])
+
+    # Añadir filtros de fecha a la consulta
+    q_with_dates = f"{basic_q} after:{start_date_str_query} before:{end_date_str_query}"
+
+    try:
+        # Llamar al servicio de Perplexity
+        analyzed_articles = await perplexity_service.search_and_analyze(
+            query=q_with_dates,
+            campaign_name=q,
+            start_date=start_date_str_api,
+            end_date=end_date_str_api,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error en el servicio de Perplexity: {e}")
+
+    if not analyzed_articles:
+        return {
+            "overall": {
+                "summary": "No se encontraron notas en el periodo solicitado.",
+                "sentiment_label": None,
+                "sentiment_score": None,
+                "topics": [],
+                "perception": {},
+            },
+            "items": [],
+            "meta": {"q": q, "size": size, "days_back": days_back, "lang": lang, "country": country},
+        }
+
+    # El servicio de Perplexity ya devuelve los items analizados.
+    overall_block = {
+        "summary": "El resumen general no está disponible en esta versión.",
+        "sentiment_label": None,
+        "sentiment_score": None,
+        "topics": [],
+        "perception": {},
+    }
+
+    return {
+        "overall": overall_block,
+        "items": analyzed_articles,
+        "meta": {
+            "q": q,
+            "size": size,
+            "days_back": days_back,
+            "lang": lang,
+            "country": country,
+            "user": effective_user,
+        },
+    }
+
+
+# -----------------------------------------------------------------------------------
+# Endpoint: Reporte Semanal con guardado en BD
+# -----------------------------------------------------------------------------------
 
 @router.get("/weekly-report")
 async def get_weekly_report(
@@ -39,7 +137,6 @@ async def get_weekly_report(
             
             if cached_report:
                 print(f"📦 Reporte semanal de '{q}' encontrado en cache")
-                # Agrega metadata al response
                 return {
                     **cached_report.reportData,
                     "_metadata": {
@@ -71,7 +168,7 @@ async def get_weekly_report(
             actorName=q,
             reportType=ReportType.WEEKLY,
             reportData=weekly_report_data,
-            summary=summary[:500] if summary else None,  # Limitar a 500 chars
+            summary=summary[:500] if summary else None,
             generationTime=generation_time,
             itemCount=item_count
         )
@@ -100,6 +197,10 @@ async def get_weekly_report(
         print(f"❌ Error al generar/guardar reporte semanal: {e}")
         raise HTTPException(status_code=500, detail=f"Error al generar el reporte semanal: {e}")
 
+
+# -----------------------------------------------------------------------------------
+# Endpoint: Resumen Diario con guardado en BD
+# -----------------------------------------------------------------------------------
 
 @router.get("/daily-summary")
 async def get_daily_summary(
@@ -191,7 +292,10 @@ async def get_daily_summary(
         raise HTTPException(status_code=500, detail=f"Error al generar el resumen diario: {e}")
 
 
+# -----------------------------------------------------------------------------------
 # NUEVO: Endpoint para ver histórico de reportes
+# -----------------------------------------------------------------------------------
+
 @router.get("/reports/history")
 async def get_reports_history(
     actor_name: str = Query(..., description="Nombre del actor"),
@@ -242,7 +346,10 @@ async def get_reports_history(
         raise HTTPException(status_code=500, detail=f"Error al obtener histórico: {e}")
 
 
+# -----------------------------------------------------------------------------------
 # NUEVO: Endpoint para obtener un reporte específico por ID
+# -----------------------------------------------------------------------------------
+
 @router.get("/reports/{report_id}")
 async def get_report_by_id(
     report_id: str,
@@ -277,7 +384,3 @@ async def get_report_by_id(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error al obtener reporte: {e}")
-
-
-
-
