@@ -250,6 +250,10 @@ class AlertNotification(Base):
     content: Mapped[dict] = mapped_column(JSON, nullable=False)
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
+
+# ------------------------
+# ActorReport (Histórico de Reportes)
+# ------------------------
 class ReportType(str, enum.Enum):
     """Tipos de reportes disponibles"""
     WEEKLY = "weekly"
@@ -268,39 +272,35 @@ class ActorReport(Base):
     __tablename__ = "actor_reports"
 
     id: Mapped[str] = mapped_column(
-        String, 
+        String(40), 
         primary_key=True, 
         default=lambda: str(uuid.uuid4())
     )
     
     actorName: Mapped[str] = mapped_column(
-        String, 
+        String(200), 
         index=True,
-        nullable=False,
-        comment="Nombre del actor político (ej: 'Samuel García')"
+        nullable=False
     )
     
     reportType: Mapped[ReportType] = mapped_column(
         Enum(ReportType),
         index=True,
-        nullable=False,
-        comment="Tipo de reporte: 'weekly' o 'daily'"
+        nullable=False
     )
     
     reportData: Mapped[dict] = mapped_column(
         JSON,
-        nullable=False,
-        comment="Datos completos del reporte en formato JSON"
+        nullable=False
     )
     
     summary: Mapped[str | None] = mapped_column(
         Text,
-        nullable=True,
-        comment="Resumen rápido del reporte para búsquedas"
+        nullable=True
     )
     
     createdAt: Mapped[datetime] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         default=datetime.utcnow,
         index=True,
         nullable=False
@@ -308,13 +308,13 @@ class ActorReport(Base):
     
     # Metadatos adicionales
     generationTime: Mapped[float | None] = mapped_column(
-        nullable=True,
-        comment="Tiempo que tomó generar el reporte (segundos)"
+        Float,
+        nullable=True
     )
     
     itemCount: Mapped[int | None] = mapped_column(
-        nullable=True,
-        comment="Número de items/evidencias en el reporte"
+        Integer,
+        nullable=True
     )
 
     def __repr__(self):
