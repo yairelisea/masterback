@@ -1,6 +1,7 @@
+# app/services/query_builder.py
+# VERSIÓN MEJORADA - Queries más específicas para evitar resultados irrelevantes
 
 from __future__ import annotations
-
 from typing import Iterable, List, Optional
 
 ROLE_KEYWORDS = [
@@ -19,7 +20,16 @@ ROLE_KEYWORDS = [
     "gobernadora",
 ]
 
-PARTY_KEYWORDS = ["morena", "pan", "pri", "prd", "mc", "verde", "pt"]
+PARTY_KEYWORDS = ["morena", "pan", "pri", "prd", "mc", "verde", "pt", "movimiento ciudadano"]
+
+# Palabras clave de contexto político mexicano
+POLITICAL_CONTEXT = [
+    "política",
+    "gobierno",
+    "elecciones",
+    "campaña",
+    "administración",
+]
 
 def _norm_list(values: Optional[Iterable[str]]) -> List[str]:
     out: List[str] = []
@@ -39,8 +49,8 @@ def build_query_variants(
     extras: Optional[Iterable[str]] = None,
 ) -> List[str]:
     """
-    Devuelve variantes de búsqueda con priorización para
-    "actor + ciudad + puesto" como las primeras opciones.
+    Devuelve variantes de búsqueda OPTIMIZADAS para evitar resultados irrelevantes.
+    Prioriza: "actor + ciudad + puesto" > "actor + puesto" > "actor + ciudad"
     """
     a = (actor or "").strip()
     if not a:
@@ -60,124 +70,192 @@ def build_query_variants(
             seen.add(s2)
             ordered.append(s2)
 
-    # 1) Prioridad: actor + rol + ciudad
+    # ============================================
+    # PRIORIDAD 1: Actor + Rol + Ciudad (MÁS ESPECÍFICO)
+    # ============================================
     for c in cities:
         for r in ROLE_KEYWORDS:
-            add(f'{a} {r} {c}')
+            # Con comillas para búsqueda exacta del nombre
             add(f'"{a}" {r} {c}')
+            # Sin comillas para más flexibilidad
+            add(f'{a} {r} {c}')
 
-    # 2) actor + partido + ciudad
+    # ============================================
+    # PRIORIDAD 2: Actor + Partido + Ciudad
+    # ============================================
     for c in cities:
         for p in PARTY_KEYWORDS:
-            add(f'{a} {p} {c}')
             add(f'"{a}" {p} {c}')
+            add(f'{a} {p} {c}')
 
-    # 3) actor + ciudad
-    for c in cities:
-        add(f'{a} {c}')
-        add(f'"{a}" {c}')
-
-    # 4) actor + rol (sin ciudad)
+    # ============================================
+    # PRIORIDAD 3: Actor + Rol (sin ciudad pero con contexto)
+    # ============================================
     for r in ROLE_KEYWORDS:
-        add(f'{a} {r}')
         add(f'"{a}" {r}')
+        add(f'{a} {r}')
 
-    # 5) actor + partido (sin ciudad)
+    # ============================================
+    # PRIORIDAD 4: Actor + Ciudad + Contexto político
+    # ============================================
+    for c in cities:
+        add(f'"{a}" política {c}')
+        add(f'{a} gobierno {c}')
+        add(f'{a} {c}')
+
+    # ============================================
+    # PRIORIDAD 5: Actor + Partido (sin ciudad)
+    # ============================================
     for p in PARTY_KEYWORDS:
-        add(f'{a} {p}')
         add(f'"{a}" {p}')
 
-    # 6) extras
+    # ============================================
+    # PRIORIDAD 6: Extras específicos
+    # ============================================
     for x in extra_words:
-        add(f'{a} {x}')
         add(f'"{a}" {x}')
         for c in cities:
-            add(f'{a} {x} {c}')
             add(f'"{a}" {x} {c}')
 
-    # 7) base
-    add(a)
+    # ============================================
+    # ÚLTIMA OPCIÓN: Actor solo (con comillas para exactitud)
+    # ============================================
     add(f'"{a}"')
+    
+    # Solo si es necesario, actor sin comillas
+    # (esto puede traer más ruido)
+    if len(ordered) < 10:
+        add(a)
 
     return ordered
 
 def get_name_variations(name: str) -> List[str]:
     """
-    Genera variaciones de un nombre (nombre completo, nombre + apellido, etc.)
+    Genera variaciones del nombre del actor.
+    Optimizado para nombres políticos mexicanos.
     """
     parts = name.split()
-    if len(parts) > 1:
-        return [name, f"{parts[0]} {parts[-1]}", parts[0], parts[-1]]
-    return [name]
+    variations = []
+    
+    # Nombre completo
+    variations.append(name)
+    
+    if len(parts) >= 2:
+        # Primer nombre + Apellido paterno
+        variations.append(f"{parts[0]} {parts[-1]}")
+        
+        # Solo apellido paterno (si es distintivo)
+        if len(parts[-1]) > 4:  # Evitar apellidos muy cortos
+            variations.append(parts[-1])
+        
+        # Primer nombre + inicial del apellido
+        variations.append(f"{parts[0]} {parts[-1][0]}.")
+    
+    if len(parts) == 1:
+        variations.append(parts[0])
+    
+    # Remover duplicados manteniendo orden
+    seen = set()
+    unique_variations = []
+    for v in variations:
+        if v not in seen:
+            seen.add(v)
+            unique_variations.append(v)
+    
+    return unique_variations
 
 def build_basic_query(
     actor: str, 
     campaign_name: str | None = None, 
-    city_keywords: Optional[Iterable[str]] = None,
-    country: str = "MX",
-    require_exact_match: bool = True
+    city_keywords: Optional[Iterable[str]] = None
 ) -> str:
     """
-    ✅ Construye query ESPECÍFICO con operadores booleanos para Perplexity
+    Construye una consulta ESPECÍFICA para Perplexity.
+    Usa OR para variaciones del nombre + AND para contexto.
     
-    Ejemplo:
-    Entrada: actor="Marcelo Abundiz", city_keywords=["Tamaulipas", "Altamira"]
-    Salida: "Marcelo Abundiz" AND (diputado OR diputada) AND ("Tamaulipas" OR "Altamira") AND (México OR Mexicano)
+    Ejemplo resultado:
+    ("Samuel Garcia" OR "Samuel G." OR "Garcia") AND (alcalde OR candidato) AND Monterrey
     """
-    import re
-    
     a = (actor or "").strip()
     if not a:
         return ""
 
-    # ✅ Detectar rol del nombre de campaña
+    # ============================================
+    # 1. VARIACIONES DEL NOMBRE (con OR)
+    # ============================================
+    name_variations = get_name_variations(a)
+    # Usar comillas para búsqueda exacta
+    quoted_variations = [f'"{v}"' for v in name_variations]
+    name_query = f"({' OR '.join(quoted_variations)})"
+
+    # ============================================
+    # 2. DETECTAR ROL del campaign_name
+    # ============================================
     role = None
-    name_lower = (campaign_name or "").lower()
+    if campaign_name:
+        name_lower = campaign_name.lower()
+        for r in ROLE_KEYWORDS:
+            if r in name_lower:
+                role = r
+                break
+
+    # ============================================
+    # 3. CIUDAD de city_keywords
+    # ============================================
+    city = None
+    for c in _norm_list(city_keywords):
+        city = c
+        break
+
+    # ============================================
+    # 4. CONSTRUIR QUERY FINAL
+    # ============================================
+    query_parts = [name_query]
     
-    role_map = {
-        "alcalde": "alcalde OR presidente municipal",
-        "alcaldesa": "alcaldesa OR presidenta municipal",
-        "diputado": "diputado OR diputada",
-        "senador": "senador OR senadora",
-        "gobernador": "gobernador OR gobernadora",
-    }
-    
-    for keyword, expanded in role_map.items():
-        if keyword in name_lower:
-            role = expanded
-            break
-    
-    # ✅ Construir query con operadores booleanos
-    query_parts = []
-    
-    # Nombre exacto con comillas (obligatorio)
-    if require_exact_match:
-        query_parts.append(f'"{a}"')
-    else:
-        # Alternativa: variaciones del nombre
-        name_vars = get_name_variations(a)
-        query_parts.append(f"({' OR '.join(name_vars)})")
-    
-    # Rol (si se detectó)
+    # Agregar contexto político para mejorar relevancia
     if role:
-        query_parts.append(f"AND ({role})")
+        query_parts.append(role)
+    else:
+        # Si no hay rol, agregar contexto político genérico
+        query_parts.append("política OR gobierno OR candidato")
     
-    # Ciudad/región (crítico para relevancia)
-    cities = _norm_list(city_keywords)
-    if cities:
-        city_query = " OR ".join([f'"{c}"' for c in cities[:3]])  # Top 3 ciudades
-        query_parts.append(f"AND ({city_query})")
+    if city:
+        query_parts.append(city)
     
-    # País (ayuda con relevancia)
-    if country:
-        country_names = {
-            "MX": "México OR Mexicano OR Mexicana",
-            "US": "Estados Unidos OR USA",
-        }
-        if country in country_names:
-            query_parts.append(f"AND ({country_names[country]})")
-    
+    # Unir con AND implícito (espacio)
     final_query = " ".join(query_parts)
+    
+    print(f"🔍 Query construido: {final_query}")
     return final_query
 
-__all__ = ["build_query_variants", "build_basic_query", "get_name_variations"]
+# ============================================
+# NUEVA FUNCIÓN: Validar query
+# ============================================
+def validate_query(query: str) -> bool:
+    """
+    Valida que el query tenga suficiente especificidad.
+    Retorna True si el query es válido, False si es muy genérico.
+    """
+    if not query or len(query) < 3:
+        return False
+    
+    # Palabras genéricas que NO deberían ser el único contenido
+    generic_words = {
+        'política', 'gobierno', 'elecciones', 'noticias',
+        'méxico', 'mexico', 'nacional', 'estatal'
+    }
+    
+    query_words = set(query.lower().split())
+    
+    # Si solo tiene palabras genéricas, rechazar
+    if query_words.issubset(generic_words):
+        return False
+    
+    return True
+
+__all__ = [
+    "build_query_variants",
+    "build_basic_query",
+    "get_name_variations",
+    "validate_query",
+]
