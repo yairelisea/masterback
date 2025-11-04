@@ -13,6 +13,7 @@ from perplexity import AsyncPerplexity, PerplexityError
 MEDIOS_LOCALES_TAMPICO = [
     "soldetampico.com.mx",
     "elsoldeltampico.com",
+    "elsoldetampico.com.mx",
     "milenio.com",
     "telediario.mx",
     "expreso.press",
@@ -52,7 +53,7 @@ async def _get_url_content(url: str) -> str:
             resp.raise_for_status()
             return resp.text
     except Exception as e:
-        print(f"Error al obtener contenido de {url}: {e}")
+        print(f"⚠️ Error al obtener contenido de {url}: {e}")
         return ""
 
 
@@ -69,20 +70,28 @@ def calcular_score_relevancia(result: Any, campaign_name: str, boost_local: bool
     - Si es medio local (boost)
     """
     score = 0.0
+    campaign_lower = campaign_name.lower()
     
-    # Boost por campaign_name en título
-    if campaign_name.lower() in result.title.lower():
-        score += 2.0
+    # Extraer palabras clave del campaign_name
+    keywords = campaign_lower.split()
     
-    # Boost por campaign_name en snippet
-    if hasattr(result, 'snippet') and result.snippet:
-        if campaign_name.lower() in result.snippet.lower():
+    # Boost por keywords en título
+    title_lower = result.title.lower()
+    for keyword in keywords:
+        if len(keyword) > 3 and keyword in title_lower:  # Ignorar palabras muy cortas
             score += 1.0
+    
+    # Boost por keywords en snippet
+    if hasattr(result, 'snippet') and result.snippet:
+        snippet_lower = result.snippet.lower()
+        for keyword in keywords:
+            if len(keyword) > 3 and keyword in snippet_lower:
+                score += 0.5
     
     # BOOST ADICIONAL para medios locales
     if boost_local and es_medio_local(result.url):
         score *= BOOST_MEDIOS_LOCALES
-        print(f"✅ MEDIO LOCAL detectado: {result.url} - Score boosted!")
+        print(f"🏠 MEDIO LOCAL: {result.url[:80]}... | Score: {score:.2f}")
     
     return score
 
@@ -102,30 +111,35 @@ class PerplexityService:
         """
         BÚSQUEDA ITERATIVA con priorización de medios locales.
         
-        Estrategia:
-        1. Búsqueda general con scoring
-        2. Si pocos resultados, búsqueda adicional EN medios locales específicos
-        3. Intenta hasta encontrar mínimo 3 resultados relevantes
+        ✅ CORRECCIONES:
+        - max_results SIEMPRE <= 20 (límite de API)
+        - Mejor cálculo de scoring
+        - Manejo robusto de errores
         """
-        print(f"🔍 Búsqueda ITERATIVA con MEDIOS LOCALES para: {campaign_name}")
-        print(f"   Query: {query}")
-        print(f"   Priorizar medios locales: {priorizar_medios_locales}")
+        print(f"\n{'='*70}")
+        print(f"🔍 BÚSQUEDA ITERATIVA CON MEDIOS LOCALES")
+        print(f"   Campaña: {campaign_name}")
+        print(f"   Query: {query[:100]}...")
+        print(f"   Medios locales: {'✅ PRIORIZADOS' if priorizar_medios_locales else '❌ No'}")
+        print(f"{'='*70}\n")
 
         formatted_start = to_mmddyyyy(start_date)
         formatted_end = to_mmddyyyy(end_date)
 
         analyzed_articles = []
+        
+        # ✅ CORRECCIÓN: max_results NUNCA excede 20
         intentos = [
-            {"max_results": 20, "threshold": 2.0, "nombre": "ESTRICTO"},
-            {"max_results": 30, "threshold": 1.5, "nombre": "MEDIO"},
-            {"max_results": 50, "threshold": 1.0, "nombre": "RELAJADO"}
+            {"max_results": 20, "threshold": 1.5, "nombre": "ESTRICTO"},
+            {"max_results": 20, "threshold": 1.0, "nombre": "MEDIO"},
+            {"max_results": 20, "threshold": 0.5, "nombre": "RELAJADO"}
         ]
 
         for i, config in enumerate(intentos, 1):
-            print(f"\n{'='*60}")
+            print(f"\n{'─'*70}")
             print(f"🔄 INTENTO {i}/3 - Modo {config['nombre']}")
             print(f"   Max resultados: {config['max_results']}, Umbral: {config['threshold']}")
-            print(f"{'='*60}\n")
+            print(f"{'─'*70}")
 
             try:
                 # === BÚSQUEDA GENERAL ===
@@ -155,23 +169,23 @@ class PerplexityService:
                     if score >= config["threshold"]
                 ]
                 
-                print(f"📊 Resultados encontrados: {len(search_results.results)}")
-                print(f"✅ Resultados relevantes (score >= {config['threshold']}): {len(filtered_results)}")
+                print(f"\n📊 Resultados:")
+                print(f"   Total encontrados: {len(search_results.results)}")
+                print(f"   ✅ Relevantes (>= {config['threshold']}): {len(filtered_results)}")
                 
                 if priorizar_medios_locales:
                     medios_locales_count = sum(1 for result, _ in filtered_results if es_medio_local(result.url))
-                    print(f"🏠 De medios locales: {medios_locales_count}")
+                    print(f"   🏠 Medios locales: {medios_locales_count}")
 
                 # Analizar artículos filtrados
-                for result, score in filtered_results[:15]:  # Máximo 15 para no saturar
-                    print(f"\n📄 Analizando: {result.title[:80]}...")
-                    print(f"   URL: {result.url}")
-                    print(f"   Score: {score:.2f}")
-                    if es_medio_local(result.url):
-                        print(f"   🏠 MEDIO LOCAL ⭐")
+                for result, score in filtered_results[:15]:  # Máximo 15
+                    print(f"\n📄 Analizando: {result.title[:70]}...")
+                    print(f"   URL: {result.url[:80]}...")
+                    print(f"   Score: {score:.2f} {'🏠' if es_medio_local(result.url) else '🌐'}")
 
                     content = await _get_url_content(result.url)
                     if not content:
+                        print(f"   ⚠️ Sin contenido, saltando...")
                         continue
 
                     analysis_prompt = f"""
@@ -194,7 +208,7 @@ Responde solo con el objeto JSON.
                         chat_response = await self.client.chat.completions.create(
                             model="sonar-reasoning",
                             messages=[
-                                {"role": "system", "content": "Eres un analista de medios que responde solo con objetos JSON definidos por el usuario."},
+                                {"role": "system", "content": "Eres un analista de medios que responde solo con objetos JSON."},
                                 {"role": "user", "content": analysis_prompt},
                             ],
                             response_format={
@@ -235,68 +249,44 @@ Responde solo con el objeto JSON.
                                 "relevance_score": score,
                                 "es_medio_local": es_medio_local(result.url)
                             })
-                            print(f"   ✅ Artículo relevante agregado (Total: {len(analyzed_articles)})")
+                            print(f"   ✅ Agregado (Total: {len(analyzed_articles)})")
 
-                    except Exception as e:
-                        print(f"   ❌ Error al analizar: {e}")
+                    except json.JSONDecodeError as e:
+                        print(f"   ⚠️ Error JSON: {e}")
                         continue
-
-                # === BÚSQUEDA ADICIONAL EN MEDIOS LOCALES ===
-                if priorizar_medios_locales and len(analyzed_articles) < 3 and i == 1:
-                    print(f"\n🏠 Búsqueda ADICIONAL en medios locales específicos...")
-                    
-                    for medio in MEDIOS_LOCALES_TAMPICO[:3]:  # Primeros 3 medios
-                        query_local = f"{query} site:{medio}"
-                        print(f"   Buscando en: {medio}")
-                        
-                        try:
-                            local_search = await self.client.search.create(
-                                query=query_local,
-                                max_results=10,
-                                **{k: v for k, v in search_params.items() if k.startswith("search_")}
-                            )
-                            
-                            for result in local_search.results[:3]:  # Máximo 3 por medio
-                                if any(art["url"] == result.url for art in analyzed_articles):
-                                    continue  # Evitar duplicados
-                                
-                                score = calcular_score_relevancia(result, campaign_name, boost_local=True)
-                                if score >= 1.0:  # Umbral más bajo para medios locales
-                                    print(f"   ✅ Encontrado en {medio}: {result.title[:60]}...")
-                                    # Analizar igual que antes...
-                                    # (código similar al bloque de análisis anterior)
-                        
-                        except Exception as e:
-                            print(f"   ❌ Error en búsqueda de {medio}: {e}")
+                    except Exception as e:
+                        print(f"   ⚠️ Error al analizar: {e}")
+                        continue
 
                 # Verificar si ya tenemos suficientes resultados
                 if len(analyzed_articles) >= 3:
-                    print(f"\n✅ ÉXITO: {len(analyzed_articles)} artículos relevantes encontrados")
+                    print(f"\n✅ ÉXITO: {len(analyzed_articles)} artículos encontrados")
                     break
 
             except PerplexityError as e:
                 print(f"❌ Error en API de Perplexity (intento {i}): {e}")
                 if i == len(intentos):
-                    return []
+                    print(f"⚠️ Agotados todos los intentos, retornando {len(analyzed_articles)} artículos")
+                    break
                 continue
 
         # Ordenar resultados finales: medios locales primero
-        if priorizar_medios_locales:
+        if priorizar_medios_locales and analyzed_articles:
             analyzed_articles.sort(key=lambda x: (not x["es_medio_local"], -x["relevance_score"]))
 
-        print(f"\n{'='*60}")
+        print(f"\n{'='*70}")
         print(f"📊 RESUMEN FINAL:")
         print(f"   Total artículos: {len(analyzed_articles)}")
-        if priorizar_medios_locales:
+        if priorizar_medios_locales and analyzed_articles:
             locales = sum(1 for art in analyzed_articles if art["es_medio_local"])
-            print(f"   De medios locales: {locales}")
-        print(f"{'='*60}\n")
+            print(f"   🏠 Medios locales: {locales}")
+        print(f"{'='*70}\n")
 
         return analyzed_articles
 
     async def get_daily_actor_summary(self, actor_name: str) -> Dict[str, Any]:
         """Resumen diario con énfasis en medios locales."""
-        print(f"📰 Resumen diario para: {actor_name} (priorizando medios locales)")
+        print(f"\n📰 Generando resumen diario para: {actor_name}")
 
         medios_str = ", ".join(MEDIOS_LOCALES_TAMPICO[:4])
         
@@ -307,26 +297,34 @@ priorizando ESPECIALMENTE medios locales de Tampico como: {medios_str}.
 Limítate a las 5-10 notas más relevantes de las últimas 24 horas.
 
 Formato JSON:
-1. **Resumen Diario Express:** Síntesis en máximo 3 líneas
-2. **Registro de Evidencia (5-10 entradas):** 
-   - Descripción
-   - Fecha
-   - Link
-   - Medio (identificar si es local)
+{{
+  "resumen_diario_express": "Texto en máximo 3 líneas",
+  "registro_de_evidencia": [
+    {{
+      "descripcion": "Descripción de la nota",
+      "fecha": "YYYY-MM-DD",
+      "link": "https://...",
+      "medio": "Nombre del medio",
+      "es_local": true/false
+    }}
+  ]
+}}
 
-Prioriza velocidad y relevancia de medios LOCALES.
+Responde SOLO con el JSON, sin texto adicional.
 """
 
         try:
             chat_response = await self.client.chat.completions.create(
                 model="sonar-reasoning",
                 messages=[
-                    {"role": "system", "content": "Eres un analista de medios especializado en prensa local de Tampico."},
+                    {"role": "system", "content": "Eres un analista de medios especializado en prensa local de Tampico. Respondes SOLO con JSON válido."},
                     {"role": "user", "content": analysis_prompt},
                 ],
                 response_format={
                     "type": "json_schema",
                     "json_schema": {
+                        "name": "daily_summary",
+                        "strict": True,
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -346,13 +344,20 @@ Prioriza velocidad y relevancia de medios LOCALES.
                                     }
                                 }
                             },
-                            "required": ["resumen_diario_express", "registro_de_evidencia"]
+                            "required": ["resumen_diario_express", "registro_de_evidencia"],
+                            "additionalProperties": False
                         }
                     }
                 },
             )
 
             analysis_content = chat_response.choices[0].message.content
+            
+            # ✅ Validación robusta de JSON
+            if not analysis_content or analysis_content.strip() == "":
+                print(f"⚠️ Respuesta vacía de la API")
+                return {"error": "Respuesta vacía de la API"}
+            
             analysis_json = json.loads(analysis_content)
             
             # Ordenar evidencias: medios locales primero
@@ -361,15 +366,19 @@ Prioriza velocidad y relevancia de medios LOCALES.
                     key=lambda x: (not x.get("es_local", False), x.get("fecha", ""))
                 )
             
+            print(f"✅ Resumen diario generado con {len(analysis_json.get('registro_de_evidencia', []))} evidencias")
             return analysis_json
 
+        except json.JSONDecodeError as e:
+            print(f"❌ Error decodificando JSON: {e}")
+            return {"error": f"Error decodificando JSON: {str(e)}"}
         except Exception as e:
             print(f"❌ Error en resumen diario: {e}")
             return {"error": str(e)}
 
     async def get_weekly_actor_report(self, actor_name: str) -> Dict[str, Any]:
         """Reporte semanal con énfasis en medios locales."""
-        print(f"📊 Reporte semanal para: {actor_name} (priorizando medios locales)")
+        print(f"\n📊 Generando reporte semanal para: {actor_name}")
 
         medios_str = ", ".join(MEDIOS_LOCALES_TAMPICO)
         
@@ -377,27 +386,36 @@ Prioriza velocidad y relevancia de medios LOCALES.
 Realiza un análisis semanal integral sobre "{actor_name}", priorizando ESPECIALMENTE 
 medios locales de Tampico: {medios_str}.
 
-Formato JSON con 3 secciones:
-1. **Resumen Ejecutivo:** Hechos, tendencias, métricas (menciones, cobertura LOCAL)
-2. **Análisis Político y FODA:** Narrativas, controversias, alianzas, FODA estratégico
-3. **Log de Evidencia (20 registros mixtos):** 
-   - Priorizar medios LOCALES
-   - Descripción, fecha, tipo de medio, enlace
-   - Marcar si es medio local
+Formato JSON:
+{{
+  "resumen_ejecutivo": "Texto con hechos, tendencias y métricas",
+  "analisis_estrategico": "Texto con narrativas, FODA y análisis político",
+  "log_de_evidencia": [
+    {{
+      "descripcion": "Descripción",
+      "fecha": "YYYY-MM-DD",
+      "tipo_medio": "Tipo de medio",
+      "link": "https://...",
+      "es_medio_local": true/false
+    }}
+  ]
+}}
 
-Prioriza extracción de prensa LOCAL de Tampico.
+Responde SOLO con el JSON, sin texto adicional.
 """
 
         try:
             chat_response = await self.client.chat.completions.create(
                 model="sonar-reasoning",
                 messages=[
-                    {"role": "system", "content": "Eres un analista político especializado en medios locales de Tampico."},
+                    {"role": "system", "content": "Eres un analista político especializado en medios locales de Tampico. Respondes SOLO con JSON válido."},
                     {"role": "user", "content": analysis_prompt},
                 ],
                 response_format={
                     "type": "json_schema",
                     "json_schema": {
+                        "name": "weekly_report",
+                        "strict": True,
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -418,13 +436,20 @@ Prioriza extracción de prensa LOCAL de Tampico.
                                     }
                                 }
                             },
-                            "required": ["resumen_ejecutivo", "analisis_estrategico", "log_de_evidencia"]
+                            "required": ["resumen_ejecutivo", "analisis_estrategico", "log_de_evidencia"],
+                            "additionalProperties": False
                         }
                     }
                 },
             )
 
             analysis_content = chat_response.choices[0].message.content
+            
+            # ✅ Validación robusta de JSON
+            if not analysis_content or analysis_content.strip() == "":
+                print(f"⚠️ Respuesta vacía de la API")
+                return {"error": "Respuesta vacía de la API"}
+            
             analysis_json = json.loads(analysis_content)
             
             # Ordenar evidencias: medios locales primero
@@ -433,8 +458,12 @@ Prioriza extracción de prensa LOCAL de Tampico.
                     key=lambda x: (not x.get("es_medio_local", False), x.get("fecha", ""))
                 )
             
+            print(f"✅ Reporte semanal generado con {len(analysis_json.get('log_de_evidencia', []))} evidencias")
             return analysis_json
 
+        except json.JSONDecodeError as e:
+            print(f"❌ Error decodificando JSON: {e}")
+            return {"error": f"Error decodificando JSON: {str(e)}"}
         except Exception as e:
             print(f"❌ Error en reporte semanal: {e}")
             return {"error": str(e)}
