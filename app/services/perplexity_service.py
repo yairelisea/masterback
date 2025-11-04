@@ -10,11 +10,12 @@ from perplexity import AsyncPerplexity, PerplexityError
 # ============================================================================
 # CONFIGURACIÓN DE MEDIOS LOCALES PRIORITARIOS
 # ============================================================================
-MEDIOS_LOCALES_TAMPICO = [
+
+# Medios de Tamaulipas
+MEDIOS_TAMAULIPAS = [
     "soldetampico.com.mx",
     "elsoldeltampico.com",
     "elsoldetampico.com.mx",
-    "milenio.com",
     "telediario.mx",
     "expreso.press",
     "expresopress.com",
@@ -22,6 +23,55 @@ MEDIOS_LOCALES_TAMPICO = [
     "laverdaddetamaulipas.com",
     "elpulsodetampico.com"
 ]
+
+# Medios de Nuevo León
+MEDIOS_NUEVO_LEON = [
+    "elporvenir.mx",
+    "milenio.com/monterrey",
+    "abcnoticias.mx",
+    "info7.mx",
+    "elfinanciero.com.mx/monterrey",
+    "multimedios.com",
+    "elnorte.com",
+    "noticiasya.com.mx"
+]
+
+# Medios de Querétaro
+MEDIOS_QUERETARO = [
+    "diariodequeretaro.com.mx",
+    "amqueretaro.com",
+    "tribunadequeretaro.com",
+    "elsoldequeretaro.com.mx",
+    "eluniversalqueretaro.mx",
+    "rotativo.com.mx/queretaro",
+    "plazadearmas.com.mx"
+]
+
+# Medios de Hidalgo
+MEDIOS_HIDALGO = [
+    "criteriohidalgo.com",
+    "elindependientedehidalgo.com.mx",
+    "elsolhidalgo.com.mx",
+    "lasillarota.com/hidalgo",
+    "milenio.com/politica/hidalgo",
+    "hidalgo.milenio.com"
+]
+
+# Medios nacionales relevantes
+MEDIOS_NACIONALES = [
+    "milenio.com",
+    "eluniversal.com.mx",
+    "jornada.com.mx",
+    "proceso.com.mx"
+]
+
+# Lista combinada de TODOS los medios locales
+MEDIOS_LOCALES_TODOS = (
+    MEDIOS_TAMAULIPAS + 
+    MEDIOS_NUEVO_LEON + 
+    MEDIOS_QUERETARO + 
+    MEDIOS_HIDALGO
+)
 
 BOOST_MEDIOS_LOCALES = 1.5
 
@@ -60,7 +110,7 @@ async def _get_url_content(url: str) -> str:
 def es_medio_local(url: str) -> bool:
     """Determina si una URL pertenece a un medio local prioritario."""
     url_lower = url.lower()
-    return any(medio in url_lower for medio in MEDIOS_LOCALES_TAMPICO)
+    return any(medio in url_lower for medio in MEDIOS_LOCALES_TODOS)
 
 
 def calcular_score_relevancia(result: Any, campaign_name: str, boost_local: bool = True) -> float:
@@ -401,15 +451,19 @@ Texto: {content[:2000]}
         return analyzed_articles
 
     async def get_daily_actor_summary(self, actor_name: str) -> Dict[str, Any]:
-        """Resumen diario con énfasis en medios locales."""
+        """Resumen diario con énfasis en medios locales de múltiples estados."""
         print(f"\n📰 Generando resumen diario para: {actor_name}")
 
-        medios_str = ", ".join(MEDIOS_LOCALES_TAMPICO[:4])
+        medios_ejemplos = "Sol de Tampico, Milenio, El Porvenir, Diario de Querétaro, Criterio Hidalgo"
         
         analysis_prompt = f"""
-Realiza una búsqueda sobre "{actor_name}" en medios digitales, priorizando medios locales de Tampico: {medios_str}.
+Realiza una búsqueda sobre "{actor_name}" en medios digitales, priorizando medios locales de:
+- Tamaulipas (Sol de Tampico, Telediario, Expreso, Hoy Tamaulipas)
+- Nuevo León (El Porvenir, Info7, Milenio Monterrey, Multimedios)
+- Querétaro (Diario de Querétaro, AM Querétaro, El Sol de Querétaro)
+- Hidalgo (Criterio Hidalgo, El Independiente, El Sol Hidalgo)
 
-Responde SOLO con JSON válido:
+Responde SOLO con JSON válido (sin texto antes o después):
 {{
   "resumen_diario_express": "Texto en máximo 3 líneas",
   "registro_de_evidencia": [
@@ -428,7 +482,7 @@ Responde SOLO con JSON válido:
             chat_response = await self.client.chat.completions.create(
                 model="sonar-reasoning",
                 messages=[
-                    {"role": "system", "content": "Analista de medios. Respondes SOLO con JSON válido."},
+                    {"role": "system", "content": "Analista de medios. Respondes SOLO con JSON válido. NUNCA incluyas texto antes o después del JSON."},
                     {"role": "user", "content": analysis_prompt},
                 ],
                 response_format={
@@ -464,10 +518,12 @@ Responde SOLO con JSON válido:
 
             analysis_content = chat_response.choices[0].message.content
             
+            # Validación robusta
             if not analysis_content or analysis_content.strip() == "":
                 print(f"⚠️ Respuesta vacía de la API para resumen diario")
+                # NUNCA retornar con clave "error", siempre con las claves correctas
                 return {
-                    "resumen_diario_express": f"Resumen no disponible para {actor_name}",
+                    "resumen_diario_express": f"Resumen no disponible para {actor_name} en este momento.",
                     "registro_de_evidencia": []
                 }
             
@@ -475,8 +531,9 @@ Responde SOLO con JSON válido:
                 analysis_json = json.loads(analysis_content)
             except json.JSONDecodeError as je:
                 print(f"⚠️ Error decodificando JSON en resumen diario: {je}")
+                # NUNCA retornar con clave "error"
                 return {
-                    "resumen_diario_express": f"Resumen básico para {actor_name}",
+                    "resumen_diario_express": f"Análisis en proceso para {actor_name}. Intenta de nuevo en unos momentos.",
                     "registro_de_evidencia": []
                 }
             
@@ -484,51 +541,50 @@ Responde SOLO con JSON válido:
             if not isinstance(analysis_json, dict):
                 print(f"⚠️ Respuesta no es un diccionario válido")
                 return {
-                    "resumen_diario_express": f"Resumen básico para {actor_name}",
+                    "resumen_diario_express": f"Recopilando información sobre {actor_name}.",
                     "registro_de_evidencia": []
                 }
             
             # Asegurar que tenga las claves requeridas
             if "resumen_diario_express" not in analysis_json:
-                analysis_json["resumen_diario_express"] = f"Resumen para {actor_name}"
+                analysis_json["resumen_diario_express"] = f"Información sobre {actor_name}"
             if "registro_de_evidencia" not in analysis_json:
                 analysis_json["registro_de_evidencia"] = []
             
-            # Ordenar evidencias
+            # Ordenar evidencias: medios locales primero
             if isinstance(analysis_json.get("registro_de_evidencia"), list):
                 analysis_json["registro_de_evidencia"].sort(
                     key=lambda x: (not x.get("es_local", False), x.get("fecha", ""))
                 )
             
-            print(f"✅ Resumen diario generado con {len(analysis_json.get('registro_de_evidencia', []))} evidencias")
+            evidencias_count = len(analysis_json.get("registro_de_evidencia", []))
+            locales_count = sum(1 for ev in analysis_json.get("registro_de_evidencia", []) if ev.get("es_local", False))
+            print(f"✅ Resumen diario generado: {evidencias_count} evidencias ({locales_count} locales)")
             return analysis_json
 
-        except json.JSONDecodeError as je:
-            print(f"❌ Error decodificando JSON en resumen diario: {je}")
-            return {
-                "resumen_diario_express": f"Resumen básico para {actor_name}",
-                "registro_de_evidencia": []
-            }
         except Exception as e:
             print(f"❌ Error inesperado en resumen diario: {e}")
+            # NUNCA retornar con clave "error", siempre estructura correcta
             return {
-                "resumen_diario_express": f"Resumen básico para {actor_name}",
+                "resumen_diario_express": f"Información sobre {actor_name} temporalmente no disponible.",
                 "registro_de_evidencia": []
             }
 
     async def get_weekly_actor_report(self, actor_name: str) -> Dict[str, Any]:
-        """Reporte semanal con énfasis en medios locales."""
+        """Reporte semanal con énfasis en medios locales de múltiples estados."""
         print(f"\n📊 Generando reporte semanal para: {actor_name}")
 
-        medios_str = ", ".join(MEDIOS_LOCALES_TAMPICO)
-        
         analysis_prompt = f"""
-Análisis semanal de "{actor_name}", priorizando medios locales: {medios_str}.
+Análisis semanal integral de "{actor_name}", priorizando medios locales de:
+- Tamaulipas: Sol de Tampico, Telediario, Expreso, Hoy Tamaulipas
+- Nuevo León: El Porvenir, Info7, Milenio Monterrey, Multimedios
+- Querétaro: Diario de Querétaro, AM Querétaro, El Sol de Querétaro
+- Hidalgo: Criterio Hidalgo, El Independiente, El Sol Hidalgo
 
-Responde SOLO con JSON válido:
+Responde SOLO con JSON válido (sin texto antes o después):
 {{
-  "resumen_ejecutivo": "Texto con hechos y métricas",
-  "analisis_estrategico": "Texto con FODA y análisis",
+  "resumen_ejecutivo": "Texto con hechos, tendencias y métricas",
+  "analisis_estrategico": "Texto con FODA y análisis político",
   "log_de_evidencia": [
     {{
       "descripcion": "Descripción",
@@ -545,7 +601,7 @@ Responde SOLO con JSON válido:
             chat_response = await self.client.chat.completions.create(
                 model="sonar-reasoning",
                 messages=[
-                    {"role": "system", "content": "Analista político. Respondes SOLO con JSON válido."},
+                    {"role": "system", "content": "Analista político. Respondes SOLO con JSON válido. NUNCA incluyas texto antes o después del JSON."},
                     {"role": "user", "content": analysis_prompt},
                 ],
                 response_format={
@@ -582,11 +638,13 @@ Responde SOLO con JSON válido:
 
             analysis_content = chat_response.choices[0].message.content
             
+            # Validación robusta
             if not analysis_content or analysis_content.strip() == "":
                 print(f"⚠️ Respuesta vacía de la API para reporte semanal")
+                # NUNCA retornar con clave "error", siempre con las claves correctas
                 return {
-                    "resumen_ejecutivo": f"Reporte no disponible para {actor_name}",
-                    "analisis_estrategico": "Sin información disponible",
+                    "resumen_ejecutivo": f"Reporte para {actor_name} en proceso de generación.",
+                    "analisis_estrategico": "Información en recopilación. Intenta de nuevo en unos momentos.",
                     "log_de_evidencia": []
                 }
             
@@ -594,50 +652,47 @@ Responde SOLO con JSON válido:
                 analysis_json = json.loads(analysis_content)
             except json.JSONDecodeError as je:
                 print(f"⚠️ Error decodificando JSON en reporte semanal: {je}")
+                # NUNCA retornar con clave "error"
                 return {
-                    "resumen_ejecutivo": f"Reporte generado para {actor_name}",
-                    "analisis_estrategico": "Información limitada disponible",
+                    "resumen_ejecutivo": f"Análisis de {actor_name} en curso.",
+                    "analisis_estrategico": "Datos en proceso de análisis.",
                     "log_de_evidencia": []
                 }
             
-            # Validar que sea un diccionario y tenga las claves requeridas
+            # Validar que sea un diccionario
             if not isinstance(analysis_json, dict):
                 print(f"⚠️ Respuesta no es un diccionario válido")
                 return {
-                    "resumen_ejecutivo": f"Reporte generado para {actor_name}",
-                    "analisis_estrategico": "Información limitada disponible",
+                    "resumen_ejecutivo": f"Información sobre {actor_name}.",
+                    "analisis_estrategico": "Análisis en progreso.",
                     "log_de_evidencia": []
                 }
             
             # Asegurar que tenga todas las claves requeridas
             if "resumen_ejecutivo" not in analysis_json:
-                analysis_json["resumen_ejecutivo"] = f"Resumen para {actor_name}"
+                analysis_json["resumen_ejecutivo"] = f"Resumen ejecutivo para {actor_name}"
             if "analisis_estrategico" not in analysis_json:
-                analysis_json["analisis_estrategico"] = "Análisis en proceso"
+                analysis_json["analisis_estrategico"] = "Análisis estratégico en proceso"
             if "log_de_evidencia" not in analysis_json:
                 analysis_json["log_de_evidencia"] = []
             
-            # Ordenar evidencias
+            # Ordenar evidencias: medios locales primero
             if isinstance(analysis_json.get("log_de_evidencia"), list):
                 analysis_json["log_de_evidencia"].sort(
                     key=lambda x: (not x.get("es_medio_local", False), x.get("fecha", ""))
                 )
             
-            print(f"✅ Reporte semanal generado con {len(analysis_json.get('log_de_evidencia', []))} evidencias")
+            evidencias_count = len(analysis_json.get("log_de_evidencia", []))
+            locales_count = sum(1 for ev in analysis_json.get("log_de_evidencia", []) if ev.get("es_medio_local", False))
+            print(f"✅ Reporte semanal generado: {evidencias_count} evidencias ({locales_count} locales)")
             return analysis_json
 
-        except json.JSONDecodeError as je:
-            print(f"❌ Error decodificando JSON en reporte semanal: {je}")
-            return {
-                "resumen_ejecutivo": f"Reporte básico para {actor_name}",
-                "analisis_estrategico": "Información limitada",
-                "log_de_evidencia": []
-            }
         except Exception as e:
             print(f"❌ Error inesperado en reporte semanal: {e}")
+            # NUNCA retornar con clave "error", siempre estructura correcta
             return {
-                "resumen_ejecutivo": f"Reporte básico para {actor_name}",
-                "analisis_estrategico": "Información limitada",
+                "resumen_ejecutivo": f"Reporte para {actor_name} temporalmente no disponible.",
+                "analisis_estrategico": "Se está trabajando en recopilar la información.",
                 "log_de_evidencia": []
             }
 
