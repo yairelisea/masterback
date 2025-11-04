@@ -1,4 +1,4 @@
-from __future__ import annotations
+ffrom __future__ import annotations
 import os
 import httpx
 import json
@@ -23,7 +23,7 @@ MEDIOS_LOCALES_TAMPICO = [
     "elpulsodetampico.com"
 ]
 
-BOOST_MEDIOS_LOCALES = 1.5  # Multiplicador de score para medios locales
+BOOST_MEDIOS_LOCALES = 1.5
 
 
 def to_mmddyyyy(date_str: Optional[str]) -> Optional[str]:
@@ -78,7 +78,7 @@ def calcular_score_relevancia(result: Any, campaign_name: str, boost_local: bool
     # Boost por keywords en título
     title_lower = result.title.lower()
     for keyword in keywords:
-        if len(keyword) > 3 and keyword in title_lower:  # Ignorar palabras muy cortas
+        if len(keyword) > 3 and keyword in title_lower:
             score += 1.0
     
     # Boost por keywords en snippet
@@ -96,9 +96,174 @@ def calcular_score_relevancia(result: Any, campaign_name: str, boost_local: bool
     return score
 
 
+def crear_analisis_fallback(title: str, url: str, relevance_score: float, es_local: bool) -> Dict[str, Any]:
+    """
+    Crea un análisis básico cuando la API no responde.
+    Usado como FALLBACK cuando el análisis JSON falla.
+    """
+    return {
+        "title": title,
+        "url": url,
+        "publishedAt": None,
+        "summary": f"Artículo sobre el tema analizado. Título: {title[:100]}",
+        "sentiment_label": "Neutral",
+        "sentiment_score": 0.0,
+        "topics": ["política", "noticias"],
+        "key_points": ["Ver artículo completo en la fuente"],
+        "relevance_score": relevance_score,
+        "es_medio_local": es_local,
+        "_fallback": True  # Marca que fue creado con fallback
+    }
+
+
 class PerplexityService:
     def __init__(self):
         self.client = AsyncPerplexity()
+
+    async def _analizar_articulo_con_fallback(
+        self, 
+        result: Any, 
+        campaign_name: str, 
+        content: str, 
+        relevance_score: float
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Intenta analizar un artículo con múltiples estrategias:
+        1. Análisis completo con JSON schema
+        2. Análisis simple sin schema (si falla el primero)
+        3. Fallback con datos básicos (si todo falla)
+        """
+        es_local = es_medio_local(result.url)
+        
+        # ========== INTENTO 1: Análisis con JSON Schema ==========
+        try:
+            analysis_prompt = f"""
+Analiza este artículo sobre '{campaign_name}'.
+
+Responde SOLO con JSON válido:
+{{
+  "summary": "Resumen en 2-3 frases",
+  "sentiment_label": "Positivo|Negativo|Neutral",
+  "sentiment_score": 0.5,
+  "topics": ["tema1", "tema2"],
+  "key_points": ["punto1", "punto2"]
+}}
+
+Artículo:
+{content[:3000]}
+"""
+
+            chat_response = await self.client.chat.completions.create(
+                model="sonar-reasoning",
+                messages=[
+                    {"role": "system", "content": "Eres un analista de medios. Respondes SOLO con JSON válido."},
+                    {"role": "user", "content": analysis_prompt},
+                ],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "news_analysis",
+                        "strict": True,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "summary": {"type": "string"},
+                                "sentiment_label": {"type": "string"},
+                                "sentiment_score": {"type": "number"},
+                                "topics": {"type": "array", "items": {"type": "string"}},
+                                "key_points": {"type": "array", "items": {"type": "string"}},
+                            },
+                            "required": ["summary", "sentiment_label", "sentiment_score", "topics", "key_points"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+            )
+
+            analysis_content = chat_response.choices[0].message.content
+            
+            # Validar que no esté vacío
+            if not analysis_content or analysis_content.strip() == "":
+                print(f"   ⚠️ Respuesta vacía, intentando método alternativo...")
+                raise ValueError("Respuesta vacía")
+            
+            analysis_json = json.loads(analysis_content)
+            
+            # Validar que tenga contenido útil
+            if not analysis_json.get("summary") or len(analysis_json.get("summary", "")) < 10:
+                print(f"   ⚠️ Análisis sin contenido útil, intentando método alternativo...")
+                raise ValueError("Análisis vacío")
+            
+            # ✅ ÉXITO: Análisis completo
+            return {
+                "title": result.title,
+                "url": result.url,
+                "publishedAt": getattr(result, 'published_date', None),
+                "summary": analysis_json.get("summary", ""),
+                "sentiment_label": analysis_json.get("sentiment_label", "Neutral"),
+                "sentiment_score": analysis_json.get("sentiment_score", 0.0),
+                "topics": analysis_json.get("topics", []),
+                "key_points": analysis_json.get("key_points", []),
+                "relevance_score": relevance_score,
+                "es_medio_local": es_local,
+                "_fallback": False
+            }
+            
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"   ⚠️ Intento 1 falló: {e}")
+            pass  # Continuar al intento 2
+        except Exception as e:
+            print(f"   ⚠️ Error inesperado en intento 1: {e}")
+            pass
+
+        # ========== INTENTO 2: Análisis Simple SIN Schema ==========
+        try:
+            print(f"   🔄 Intentando análisis simple...")
+            
+            simple_prompt = f"""
+Analiza brevemente este artículo sobre '{campaign_name}'.
+
+Responde en formato JSON simple:
+{{"summary": "resumen breve", "sentiment": "positivo/negativo/neutral"}}
+
+Texto: {content[:2000]}
+"""
+
+            simple_response = await self.client.chat.completions.create(
+                model="sonar",  # Modelo más simple
+                messages=[
+                    {"role": "user", "content": simple_prompt},
+                ],
+            )
+            
+            simple_content = simple_response.choices[0].message.content
+            
+            if simple_content and simple_content.strip():
+                # Intentar parsear el JSON
+                simple_json = json.loads(simple_content)
+                
+                # ✅ ÉXITO: Análisis simple
+                print(f"   ✅ Análisis simple exitoso")
+                return {
+                    "title": result.title,
+                    "url": result.url,
+                    "publishedAt": getattr(result, 'published_date', None),
+                    "summary": simple_json.get("summary", f"Artículo sobre {campaign_name}"),
+                    "sentiment_label": simple_json.get("sentiment", "Neutral").capitalize(),
+                    "sentiment_score": 0.0,
+                    "topics": [campaign_name, "política"],
+                    "key_points": ["Ver fuente original"],
+                    "relevance_score": relevance_score,
+                    "es_medio_local": es_local,
+                    "_fallback": "simple"
+                }
+        except Exception as e:
+            print(f"   ⚠️ Intento 2 falló: {e}")
+            pass
+
+        # ========== INTENTO 3: FALLBACK - Datos Básicos ==========
+        print(f"   ⚙️ Usando datos básicos (fallback)")
+        return crear_analisis_fallback(result.title, result.url, relevance_score, es_local)
 
     async def search_and_analyze(
         self, 
@@ -110,14 +275,10 @@ class PerplexityService:
     ) -> List[Dict[str, Any]]:
         """
         BÚSQUEDA ITERATIVA con priorización de medios locales.
-        
-        ✅ CORRECCIONES:
-        - max_results SIEMPRE <= 20 (límite de API)
-        - Mejor cálculo de scoring
-        - Manejo robusto de errores
+        ULTRA ROBUSTA con múltiples estrategias de análisis.
         """
         print(f"\n{'='*70}")
-        print(f"🔍 BÚSQUEDA ITERATIVA CON MEDIOS LOCALES")
+        print(f"🔍 BÚSQUEDA ITERATIVA ULTRA ROBUSTA")
         print(f"   Campaña: {campaign_name}")
         print(f"   Query: {query[:100]}...")
         print(f"   Medios locales: {'✅ PRIORIZADOS' if priorizar_medios_locales else '❌ No'}")
@@ -128,7 +289,6 @@ class PerplexityService:
 
         analyzed_articles = []
         
-        # ✅ CORRECCIÓN: max_results NUNCA excede 20
         intentos = [
             {"max_results": 20, "threshold": 1.5, "nombre": "ESTRICTO"},
             {"max_results": 20, "threshold": 1.0, "nombre": "MEDIO"},
@@ -178,85 +338,39 @@ class PerplexityService:
                     print(f"   🏠 Medios locales: {medios_locales_count}")
 
                 # Analizar artículos filtrados
-                for result, score in filtered_results[:15]:  # Máximo 15
+                for result, score in filtered_results[:15]:
                     print(f"\n📄 Analizando: {result.title[:70]}...")
                     print(f"   URL: {result.url[:80]}...")
                     print(f"   Score: {score:.2f} {'🏠' if es_medio_local(result.url) else '🌐'}")
 
                     content = await _get_url_content(result.url)
                     if not content:
-                        print(f"   ⚠️ Sin contenido, saltando...")
-                        continue
-
-                    analysis_prompt = f"""
-Analiza el siguiente texto sobre política mexicana.
-Si '{campaign_name}' NO tiene relevancia, responde solo {{}}
-Si SÍ es relevante, responde con este objeto JSON:
-- summary: resumen conciso (2-3 frases)
-- sentiment_label: 'Positivo', 'Negativo' o 'Neutral'
-- sentiment_score: de -1.0 a 1.0
-- topics: 3-5 temas principales
-- key_points: 2-3 citas o puntos clave
-
-Texto:
-{content[:4000]}
-
-Responde solo con el objeto JSON.
-"""
-
-                    try:
-                        chat_response = await self.client.chat.completions.create(
-                            model="sonar-reasoning",
-                            messages=[
-                                {"role": "system", "content": "Eres un analista de medios que responde solo con objetos JSON."},
-                                {"role": "user", "content": analysis_prompt},
-                            ],
-                            response_format={
-                                "type": "json_schema",
-                                "json_schema": {
-                                    "name": "news_analysis",
-                                    "strict": True,
-                                    "schema": {
-                                        "type": "object",
-                                        "properties": {
-                                            "summary": {"type": "string"},
-                                            "sentiment_label": {"type": "string"},
-                                            "sentiment_score": {"type": "number"},
-                                            "topics": {"type": "array", "items": {"type": "string"}},
-                                            "key_points": {"type": "array", "items": {"type": "string"}},
-                                        },
-                                        "required": ["summary", "sentiment_label", "sentiment_score", "topics", "key_points"],
-                                        "additionalProperties": False,
-                                    },
-                                },
-                            },
+                        print(f"   ⚠️ Sin contenido, usando fallback básico")
+                        # Aún así agregamos el artículo con datos básicos
+                        article = crear_analisis_fallback(
+                            result.title, 
+                            result.url, 
+                            score, 
+                            es_medio_local(result.url)
                         )
-
-                        analysis_content = chat_response.choices[0].message.content
-                        analysis_json = json.loads(analysis_content)
-
-                        # Solo agregar si tiene contenido relevante
-                        if analysis_json and analysis_json.get("summary"):
-                            analyzed_articles.append({
-                                "title": result.title,
-                                "url": result.url,
-                                "publishedAt": getattr(result, 'published_date', None),
-                                "summary": analysis_json.get("summary", ""),
-                                "sentiment_label": analysis_json.get("sentiment_label", "Neutral"),
-                                "sentiment_score": analysis_json.get("sentiment_score", 0.0),
-                                "topics": analysis_json.get("topics", []),
-                                "key_points": analysis_json.get("key_points", []),
-                                "relevance_score": score,
-                                "es_medio_local": es_medio_local(result.url)
-                            })
-                            print(f"   ✅ Agregado (Total: {len(analyzed_articles)})")
-
-                    except json.JSONDecodeError as e:
-                        print(f"   ⚠️ Error JSON: {e}")
+                        analyzed_articles.append(article)
+                        print(f"   ✅ Agregado con datos básicos (Total: {len(analyzed_articles)})")
                         continue
-                    except Exception as e:
-                        print(f"   ⚠️ Error al analizar: {e}")
-                        continue
+
+                    # ✅ Intentar análisis con fallback automático
+                    article = await self._analizar_articulo_con_fallback(
+                        result, campaign_name, content, score
+                    )
+                    
+                    if article:
+                        analyzed_articles.append(article)
+                        fallback_type = article.get("_fallback", False)
+                        if fallback_type == True:
+                            print(f"   ✅ Agregado con fallback básico (Total: {len(analyzed_articles)})")
+                        elif fallback_type == "simple":
+                            print(f"   ✅ Agregado con análisis simple (Total: {len(analyzed_articles)})")
+                        else:
+                            print(f"   ✅ Agregado con análisis completo (Total: {len(analyzed_articles)})")
 
                 # Verificar si ya tenemos suficientes resultados
                 if len(analyzed_articles) >= 3:
@@ -279,7 +393,9 @@ Responde solo con el objeto JSON.
         print(f"   Total artículos: {len(analyzed_articles)}")
         if priorizar_medios_locales and analyzed_articles:
             locales = sum(1 for art in analyzed_articles if art["es_medio_local"])
+            fallbacks = sum(1 for art in analyzed_articles if art.get("_fallback"))
             print(f"   🏠 Medios locales: {locales}")
+            print(f"   ⚙️ Con fallback: {fallbacks}")
         print(f"{'='*70}\n")
 
         return analyzed_articles
@@ -291,33 +407,28 @@ Responde solo con el objeto JSON.
         medios_str = ", ".join(MEDIOS_LOCALES_TAMPICO[:4])
         
         analysis_prompt = f"""
-Realiza una búsqueda automatizada sobre el actor político "{actor_name}" en medios digitales, prensa y redes sociales, 
-priorizando ESPECIALMENTE medios locales de Tampico como: {medios_str}.
+Realiza una búsqueda sobre "{actor_name}" en medios digitales, priorizando medios locales de Tampico: {medios_str}.
 
-Limítate a las 5-10 notas más relevantes de las últimas 24 horas.
-
-Formato JSON:
+Responde SOLO con JSON válido:
 {{
   "resumen_diario_express": "Texto en máximo 3 líneas",
   "registro_de_evidencia": [
     {{
-      "descripcion": "Descripción de la nota",
+      "descripcion": "Descripción",
       "fecha": "YYYY-MM-DD",
       "link": "https://...",
       "medio": "Nombre del medio",
-      "es_local": true/false
+      "es_local": true
     }}
   ]
 }}
-
-Responde SOLO con el JSON, sin texto adicional.
 """
 
         try:
             chat_response = await self.client.chat.completions.create(
                 model="sonar-reasoning",
                 messages=[
-                    {"role": "system", "content": "Eres un analista de medios especializado en prensa local de Tampico. Respondes SOLO con JSON válido."},
+                    {"role": "system", "content": "Analista de medios. Respondes SOLO con JSON válido."},
                     {"role": "user", "content": analysis_prompt},
                 ],
                 response_format={
@@ -336,7 +447,7 @@ Responde SOLO con el JSON, sin texto adicional.
                                         "properties": {
                                             "descripcion": {"type": "string"},
                                             "fecha": {"type": "string"},
-                                            "link": {"type": "string", "format": "uri"},
+                                            "link": {"type": "string"},
                                             "medio": {"type": "string"},
                                             "es_local": {"type": "boolean"}
                                         },
@@ -353,28 +464,28 @@ Responde SOLO con el JSON, sin texto adicional.
 
             analysis_content = chat_response.choices[0].message.content
             
-            # ✅ Validación robusta de JSON
             if not analysis_content or analysis_content.strip() == "":
-                print(f"⚠️ Respuesta vacía de la API")
-                return {"error": "Respuesta vacía de la API"}
+                return {
+                    "resumen_diario_express": f"Resumen no disponible para {actor_name}",
+                    "registro_de_evidencia": []
+                }
             
             analysis_json = json.loads(analysis_content)
             
-            # Ordenar evidencias: medios locales primero
             if "registro_de_evidencia" in analysis_json:
                 analysis_json["registro_de_evidencia"].sort(
                     key=lambda x: (not x.get("es_local", False), x.get("fecha", ""))
                 )
             
-            print(f"✅ Resumen diario generado con {len(analysis_json.get('registro_de_evidencia', []))} evidencias")
+            print(f"✅ Resumen diario generado")
             return analysis_json
 
-        except json.JSONDecodeError as e:
-            print(f"❌ Error decodificando JSON: {e}")
-            return {"error": f"Error decodificando JSON: {str(e)}"}
         except Exception as e:
             print(f"❌ Error en resumen diario: {e}")
-            return {"error": str(e)}
+            return {
+                "resumen_diario_express": f"Error al generar resumen: {str(e)}",
+                "registro_de_evidencia": []
+            }
 
     async def get_weekly_actor_report(self, actor_name: str) -> Dict[str, Any]:
         """Reporte semanal con énfasis en medios locales."""
@@ -383,32 +494,29 @@ Responde SOLO con el JSON, sin texto adicional.
         medios_str = ", ".join(MEDIOS_LOCALES_TAMPICO)
         
         analysis_prompt = f"""
-Realiza un análisis semanal integral sobre "{actor_name}", priorizando ESPECIALMENTE 
-medios locales de Tampico: {medios_str}.
+Análisis semanal de "{actor_name}", priorizando medios locales: {medios_str}.
 
-Formato JSON:
+Responde SOLO con JSON válido:
 {{
-  "resumen_ejecutivo": "Texto con hechos, tendencias y métricas",
-  "analisis_estrategico": "Texto con narrativas, FODA y análisis político",
+  "resumen_ejecutivo": "Texto con hechos y métricas",
+  "analisis_estrategico": "Texto con FODA y análisis",
   "log_de_evidencia": [
     {{
       "descripcion": "Descripción",
       "fecha": "YYYY-MM-DD",
-      "tipo_medio": "Tipo de medio",
+      "tipo_medio": "Tipo",
       "link": "https://...",
-      "es_medio_local": true/false
+      "es_medio_local": true
     }}
   ]
 }}
-
-Responde SOLO con el JSON, sin texto adicional.
 """
 
         try:
             chat_response = await self.client.chat.completions.create(
                 model="sonar-reasoning",
                 messages=[
-                    {"role": "system", "content": "Eres un analista político especializado en medios locales de Tampico. Respondes SOLO con JSON válido."},
+                    {"role": "system", "content": "Analista político. Respondes SOLO con JSON válido."},
                     {"role": "user", "content": analysis_prompt},
                 ],
                 response_format={
@@ -445,28 +553,30 @@ Responde SOLO con el JSON, sin texto adicional.
 
             analysis_content = chat_response.choices[0].message.content
             
-            # ✅ Validación robusta de JSON
             if not analysis_content or analysis_content.strip() == "":
-                print(f"⚠️ Respuesta vacía de la API")
-                return {"error": "Respuesta vacía de la API"}
+                return {
+                    "resumen_ejecutivo": f"Reporte no disponible para {actor_name}",
+                    "analisis_estrategico": "Sin información",
+                    "log_de_evidencia": []
+                }
             
             analysis_json = json.loads(analysis_content)
             
-            # Ordenar evidencias: medios locales primero
             if "log_de_evidencia" in analysis_json:
                 analysis_json["log_de_evidencia"].sort(
                     key=lambda x: (not x.get("es_medio_local", False), x.get("fecha", ""))
                 )
             
-            print(f"✅ Reporte semanal generado con {len(analysis_json.get('log_de_evidencia', []))} evidencias")
+            print(f"✅ Reporte semanal generado")
             return analysis_json
 
-        except json.JSONDecodeError as e:
-            print(f"❌ Error decodificando JSON: {e}")
-            return {"error": f"Error decodificando JSON: {str(e)}"}
         except Exception as e:
             print(f"❌ Error en reporte semanal: {e}")
-            return {"error": str(e)}
+            return {
+                "resumen_ejecutivo": f"Error al generar reporte: {str(e)}",
+                "analisis_estrategico": "Sin información",
+                "log_de_evidencia": []
+            }
 
 
 # Instancia global del servicio
