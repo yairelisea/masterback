@@ -48,7 +48,7 @@ async def _get_url_content(url: str) -> str:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         }
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
             resp = await client.get(url, headers=headers)
             resp.raise_for_status()
             return resp.text
@@ -465,25 +465,54 @@ Responde SOLO con JSON válido:
             analysis_content = chat_response.choices[0].message.content
             
             if not analysis_content or analysis_content.strip() == "":
+                print(f"⚠️ Respuesta vacía de la API para resumen diario")
                 return {
                     "resumen_diario_express": f"Resumen no disponible para {actor_name}",
                     "registro_de_evidencia": []
                 }
             
-            analysis_json = json.loads(analysis_content)
+            try:
+                analysis_json = json.loads(analysis_content)
+            except json.JSONDecodeError as je:
+                print(f"⚠️ Error decodificando JSON en resumen diario: {je}")
+                return {
+                    "resumen_diario_express": f"Resumen básico para {actor_name}",
+                    "registro_de_evidencia": []
+                }
             
-            if "registro_de_evidencia" in analysis_json:
+            # Validar que sea un diccionario
+            if not isinstance(analysis_json, dict):
+                print(f"⚠️ Respuesta no es un diccionario válido")
+                return {
+                    "resumen_diario_express": f"Resumen básico para {actor_name}",
+                    "registro_de_evidencia": []
+                }
+            
+            # Asegurar que tenga las claves requeridas
+            if "resumen_diario_express" not in analysis_json:
+                analysis_json["resumen_diario_express"] = f"Resumen para {actor_name}"
+            if "registro_de_evidencia" not in analysis_json:
+                analysis_json["registro_de_evidencia"] = []
+            
+            # Ordenar evidencias
+            if isinstance(analysis_json.get("registro_de_evidencia"), list):
                 analysis_json["registro_de_evidencia"].sort(
                     key=lambda x: (not x.get("es_local", False), x.get("fecha", ""))
                 )
             
-            print(f"✅ Resumen diario generado")
+            print(f"✅ Resumen diario generado con {len(analysis_json.get('registro_de_evidencia', []))} evidencias")
             return analysis_json
 
-        except Exception as e:
-            print(f"❌ Error en resumen diario: {e}")
+        except json.JSONDecodeError as je:
+            print(f"❌ Error decodificando JSON en resumen diario: {je}")
             return {
-                "resumen_diario_express": f"Error al generar resumen: {str(e)}",
+                "resumen_diario_express": f"Resumen básico para {actor_name}",
+                "registro_de_evidencia": []
+            }
+        except Exception as e:
+            print(f"❌ Error inesperado en resumen diario: {e}")
+            return {
+                "resumen_diario_express": f"Resumen básico para {actor_name}",
                 "registro_de_evidencia": []
             }
 
@@ -554,27 +583,61 @@ Responde SOLO con JSON válido:
             analysis_content = chat_response.choices[0].message.content
             
             if not analysis_content or analysis_content.strip() == "":
+                print(f"⚠️ Respuesta vacía de la API para reporte semanal")
                 return {
                     "resumen_ejecutivo": f"Reporte no disponible para {actor_name}",
-                    "analisis_estrategico": "Sin información",
+                    "analisis_estrategico": "Sin información disponible",
                     "log_de_evidencia": []
                 }
             
-            analysis_json = json.loads(analysis_content)
+            try:
+                analysis_json = json.loads(analysis_content)
+            except json.JSONDecodeError as je:
+                print(f"⚠️ Error decodificando JSON en reporte semanal: {je}")
+                return {
+                    "resumen_ejecutivo": f"Reporte generado para {actor_name}",
+                    "analisis_estrategico": "Información limitada disponible",
+                    "log_de_evidencia": []
+                }
             
-            if "log_de_evidencia" in analysis_json:
+            # Validar que sea un diccionario y tenga las claves requeridas
+            if not isinstance(analysis_json, dict):
+                print(f"⚠️ Respuesta no es un diccionario válido")
+                return {
+                    "resumen_ejecutivo": f"Reporte generado para {actor_name}",
+                    "analisis_estrategico": "Información limitada disponible",
+                    "log_de_evidencia": []
+                }
+            
+            # Asegurar que tenga todas las claves requeridas
+            if "resumen_ejecutivo" not in analysis_json:
+                analysis_json["resumen_ejecutivo"] = f"Resumen para {actor_name}"
+            if "analisis_estrategico" not in analysis_json:
+                analysis_json["analisis_estrategico"] = "Análisis en proceso"
+            if "log_de_evidencia" not in analysis_json:
+                analysis_json["log_de_evidencia"] = []
+            
+            # Ordenar evidencias
+            if isinstance(analysis_json.get("log_de_evidencia"), list):
                 analysis_json["log_de_evidencia"].sort(
                     key=lambda x: (not x.get("es_medio_local", False), x.get("fecha", ""))
                 )
             
-            print(f"✅ Reporte semanal generado")
+            print(f"✅ Reporte semanal generado con {len(analysis_json.get('log_de_evidencia', []))} evidencias")
             return analysis_json
 
-        except Exception as e:
-            print(f"❌ Error en reporte semanal: {e}")
+        except json.JSONDecodeError as je:
+            print(f"❌ Error decodificando JSON en reporte semanal: {je}")
             return {
-                "resumen_ejecutivo": f"Error al generar reporte: {str(e)}",
-                "analisis_estrategico": "Sin información",
+                "resumen_ejecutivo": f"Reporte básico para {actor_name}",
+                "analisis_estrategico": "Información limitada",
+                "log_de_evidencia": []
+            }
+        except Exception as e:
+            print(f"❌ Error inesperado en reporte semanal: {e}")
+            return {
+                "resumen_ejecutivo": f"Reporte básico para {actor_name}",
+                "analisis_estrategico": "Información limitada",
                 "log_de_evidencia": []
             }
 
