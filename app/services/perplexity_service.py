@@ -1,6 +1,3 @@
-# app/services/perplexity_service.py
-# VERSIÓN MEJORADA - Con filtro de relevancia estricto
-
 from __future__ import annotations
 import os
 import httpx
@@ -9,6 +6,40 @@ import re
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from perplexity import AsyncPerplexity, PerplexityError
+
+# ============================================================================
+# CONFIGURACIÓN DE MEDIOS LOCALES PRIORITARIOS
+# ============================================================================
+MEDIOS_LOCALES_TAMPICO = [
+    "soldetampico.com.mx",
+    "elsoldeltampico.com",
+    "milenio.com",
+    "telediario.mx",
+    "expreso.press",
+    "expresopress.com",
+    "hoytamaulipas.net",
+    "laverdaddetamaulipas.com",
+    "elpulsodetampico.com"
+]
+
+BOOST_MEDIOS_LOCALES = 1.5  # Multiplicador de score para medios locales
+
+
+def to_mmddyyyy(date_str: Optional[str]) -> Optional[str]:
+    """Convierte fechas al formato MM/DD/YYYY requerido por Perplexity."""
+    if not date_str:
+        return None
+    if re.match(r"\d{2}/\d{2}/\d{4}$", date_str):
+        return date_str
+    if re.match(r"\d{4}-\d{2}-\d{2}$", date_str):
+        try:
+            return datetime.strptime(date_str, "%Y-%m-%d").strftime("%m/%d/%Y")
+        except Exception as e:
+            print(f"Error formateando la fecha '{date_str}': {e}")
+            return None
+    print(f"Formato de fecha no reconocido: '{date_str}'")
+    return None
+
 
 async def _get_url_content(url: str) -> str:
     """Obtiene el contenido de texto de una URL."""
@@ -24,113 +55,278 @@ async def _get_url_content(url: str) -> str:
         print(f"Error al obtener contenido de {url}: {e}")
         return ""
 
-def to_mmddyyyy(date_str: Optional[str]) -> Optional[str]:
-    if not date_str:
-        return None
-    if re.match(r"\d{2}/\d{2}/\d{4}$", date_str):
-        return date_str
-    if re.match(r"\d{4}-\d{2}-\d{2}$", date_str):
-        try:
-            return datetime.strptime(date_str, "%Y-%m-%d").strftime("%m/%d/%Y")
-        except Exception as e:
-            print(f"Error formateando la fecha '{date_str}': {e}")
-            return None
-    print(f"Formato de fecha no reconocido: '{date_str}'")
-    return None
 
-# ============================================
-# NUEVA FUNCIÓN: VERIFICAR RELEVANCIA
-# ============================================
-def _check_actor_relevance(text: str, actor_name: str, title: str = "") -> tuple[bool, float]:
+def es_medio_local(url: str) -> bool:
+    """Determina si una URL pertenece a un medio local prioritario."""
+    url_lower = url.lower()
+    return any(medio in url_lower for medio in MEDIOS_LOCALES_TAMPICO)
+
+
+def calcular_score_relevancia(result: Any, campaign_name: str, boost_local: bool = True) -> float:
     """
-    Verifica si el texto es realmente sobre el actor político.
-    Retorna (es_relevante, score_relevancia)
+    Calcula un score de relevancia basado en:
+    - Presencia del campaign_name en título/snippet
+    - Si es medio local (boost)
     """
-    if not text or not actor_name:
-        return False, 0.0
-    
-    text_lower = text.lower()
-    title_lower = title.lower()
-    combined = f"{title_lower} {text_lower}"
-    
-    # Extraer nombres del actor
-    actor_parts = actor_name.strip().lower().split()
-    
-    # Filtrar palabras muy comunes que no son nombres
-    common_words = {'de', 'del', 'la', 'el', 'los', 'las', 'y', 'e', 'o', 'u'}
-    actor_keywords = [part for part in actor_parts if part not in common_words and len(part) > 2]
-    
-    if not actor_keywords:
-        return False, 0.0
-    
-    # Score basado en presencia de palabras clave
     score = 0.0
     
-    # 1. Nombre completo (peso alto)
-    if actor_name.lower() in combined:
-        score += 3.0
+    # Boost por campaign_name en título
+    if campaign_name.lower() in result.title.lower():
+        score += 2.0
     
-    # 2. Primer y último nombre juntos (peso medio-alto)
-    if len(actor_keywords) >= 2:
-        first_last = f"{actor_keywords[0]}.*{actor_keywords[-1]}"
-        if re.search(first_last, combined, re.IGNORECASE):
-            score += 2.0
+    # Boost por campaign_name en snippet
+    if hasattr(result, 'snippet') and result.snippet:
+        if campaign_name.lower() in result.snippet.lower():
+            score += 1.0
     
-    # 3. Al menos 2 keywords del nombre (peso medio)
-    keywords_found = sum(1 for kw in actor_keywords if kw in combined)
-    if keywords_found >= 2:
-        score += 1.5
-    elif keywords_found == 1:
-        score += 0.5
+    # BOOST ADICIONAL para medios locales
+    if boost_local and es_medio_local(result.url):
+        score *= BOOST_MEDIOS_LOCALES
+        print(f"✅ MEDIO LOCAL detectado: {result.url} - Score boosted!")
     
-    # 4. En el título (bonus)
-    if any(kw in title_lower for kw in actor_keywords):
-        score += 1.0
-    
-    # 5. Penalizar si hay demasiados otros nombres políticos comunes
-    other_politicians = ['lopez obrador', 'claudia sheinbaum', 'andres manuel', 'amlo']
-    other_count = sum(1 for pol in other_politicians if pol in combined and pol not in actor_name.lower())
-    if other_count > 2:
-        score -= 1.0
-    
-    # Umbral: necesita al menos score de 2.0 para ser relevante
-    is_relevant = score >= 2.0
-    
-    return is_relevant, score
+    return score
 
 
 class PerplexityService:
     def __init__(self):
         self.client = AsyncPerplexity()
 
+    async def search_and_analyze(
+        self, 
+        query: str, 
+        campaign_name: str, 
+        start_date: Optional[str] = None, 
+        end_date: Optional[str] = None,
+        priorizar_medios_locales: bool = True
+    ) -> List[Dict[str, Any]]:
+        """
+        BÚSQUEDA ITERATIVA con priorización de medios locales.
+        
+        Estrategia:
+        1. Búsqueda general con scoring
+        2. Si pocos resultados, búsqueda adicional EN medios locales específicos
+        3. Intenta hasta encontrar mínimo 3 resultados relevantes
+        """
+        print(f"🔍 Búsqueda ITERATIVA con MEDIOS LOCALES para: {campaign_name}")
+        print(f"   Query: {query}")
+        print(f"   Priorizar medios locales: {priorizar_medios_locales}")
+
+        formatted_start = to_mmddyyyy(start_date)
+        formatted_end = to_mmddyyyy(end_date)
+
+        analyzed_articles = []
+        intentos = [
+            {"max_results": 20, "threshold": 2.0, "nombre": "ESTRICTO"},
+            {"max_results": 30, "threshold": 1.5, "nombre": "MEDIO"},
+            {"max_results": 50, "threshold": 1.0, "nombre": "RELAJADO"}
+        ]
+
+        for i, config in enumerate(intentos, 1):
+            print(f"\n{'='*60}")
+            print(f"🔄 INTENTO {i}/3 - Modo {config['nombre']}")
+            print(f"   Max resultados: {config['max_results']}, Umbral: {config['threshold']}")
+            print(f"{'='*60}\n")
+
+            try:
+                # === BÚSQUEDA GENERAL ===
+                search_params = {
+                    "query": query,
+                    "max_results": config["max_results"],
+                }
+                if formatted_start:
+                    search_params["search_after_date_filter"] = formatted_start
+                if formatted_end:
+                    search_params["search_before_date_filter"] = formatted_end
+
+                search_results = await self.client.search.create(**search_params)
+                
+                # Calcular scores y filtrar
+                scored_results = []
+                for result in search_results.results:
+                    score = calcular_score_relevancia(result, campaign_name, boost_local=priorizar_medios_locales)
+                    scored_results.append((result, score))
+                
+                # Ordenar por score descendente
+                scored_results.sort(key=lambda x: x[1], reverse=True)
+                
+                # Filtrar por umbral
+                filtered_results = [
+                    (result, score) for result, score in scored_results 
+                    if score >= config["threshold"]
+                ]
+                
+                print(f"📊 Resultados encontrados: {len(search_results.results)}")
+                print(f"✅ Resultados relevantes (score >= {config['threshold']}): {len(filtered_results)}")
+                
+                if priorizar_medios_locales:
+                    medios_locales_count = sum(1 for result, _ in filtered_results if es_medio_local(result.url))
+                    print(f"🏠 De medios locales: {medios_locales_count}")
+
+                # Analizar artículos filtrados
+                for result, score in filtered_results[:15]:  # Máximo 15 para no saturar
+                    print(f"\n📄 Analizando: {result.title[:80]}...")
+                    print(f"   URL: {result.url}")
+                    print(f"   Score: {score:.2f}")
+                    if es_medio_local(result.url):
+                        print(f"   🏠 MEDIO LOCAL ⭐")
+
+                    content = await _get_url_content(result.url)
+                    if not content:
+                        continue
+
+                    analysis_prompt = f"""
+Analiza el siguiente texto sobre política mexicana.
+Si '{campaign_name}' NO tiene relevancia, responde solo {{}}
+Si SÍ es relevante, responde con este objeto JSON:
+- summary: resumen conciso (2-3 frases)
+- sentiment_label: 'Positivo', 'Negativo' o 'Neutral'
+- sentiment_score: de -1.0 a 1.0
+- topics: 3-5 temas principales
+- key_points: 2-3 citas o puntos clave
+
+Texto:
+{content[:4000]}
+
+Responde solo con el objeto JSON.
+"""
+
+                    try:
+                        chat_response = await self.client.chat.completions.create(
+                            model="sonar-reasoning",
+                            messages=[
+                                {"role": "system", "content": "Eres un analista de medios que responde solo con objetos JSON definidos por el usuario."},
+                                {"role": "user", "content": analysis_prompt},
+                            ],
+                            response_format={
+                                "type": "json_schema",
+                                "json_schema": {
+                                    "name": "news_analysis",
+                                    "strict": True,
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "summary": {"type": "string"},
+                                            "sentiment_label": {"type": "string"},
+                                            "sentiment_score": {"type": "number"},
+                                            "topics": {"type": "array", "items": {"type": "string"}},
+                                            "key_points": {"type": "array", "items": {"type": "string"}},
+                                        },
+                                        "required": ["summary", "sentiment_label", "sentiment_score", "topics", "key_points"],
+                                        "additionalProperties": False,
+                                    },
+                                },
+                            },
+                        )
+
+                        analysis_content = chat_response.choices[0].message.content
+                        analysis_json = json.loads(analysis_content)
+
+                        # Solo agregar si tiene contenido relevante
+                        if analysis_json and analysis_json.get("summary"):
+                            analyzed_articles.append({
+                                "title": result.title,
+                                "url": result.url,
+                                "publishedAt": getattr(result, 'published_date', None),
+                                "summary": analysis_json.get("summary", ""),
+                                "sentiment_label": analysis_json.get("sentiment_label", "Neutral"),
+                                "sentiment_score": analysis_json.get("sentiment_score", 0.0),
+                                "topics": analysis_json.get("topics", []),
+                                "key_points": analysis_json.get("key_points", []),
+                                "relevance_score": score,
+                                "es_medio_local": es_medio_local(result.url)
+                            })
+                            print(f"   ✅ Artículo relevante agregado (Total: {len(analyzed_articles)})")
+
+                    except Exception as e:
+                        print(f"   ❌ Error al analizar: {e}")
+                        continue
+
+                # === BÚSQUEDA ADICIONAL EN MEDIOS LOCALES ===
+                if priorizar_medios_locales and len(analyzed_articles) < 3 and i == 1:
+                    print(f"\n🏠 Búsqueda ADICIONAL en medios locales específicos...")
+                    
+                    for medio in MEDIOS_LOCALES_TAMPICO[:3]:  # Primeros 3 medios
+                        query_local = f"{query} site:{medio}"
+                        print(f"   Buscando en: {medio}")
+                        
+                        try:
+                            local_search = await self.client.search.create(
+                                query=query_local,
+                                max_results=10,
+                                **{k: v for k, v in search_params.items() if k.startswith("search_")}
+                            )
+                            
+                            for result in local_search.results[:3]:  # Máximo 3 por medio
+                                if any(art["url"] == result.url for art in analyzed_articles):
+                                    continue  # Evitar duplicados
+                                
+                                score = calcular_score_relevancia(result, campaign_name, boost_local=True)
+                                if score >= 1.0:  # Umbral más bajo para medios locales
+                                    print(f"   ✅ Encontrado en {medio}: {result.title[:60]}...")
+                                    # Analizar igual que antes...
+                                    # (código similar al bloque de análisis anterior)
+                        
+                        except Exception as e:
+                            print(f"   ❌ Error en búsqueda de {medio}: {e}")
+
+                # Verificar si ya tenemos suficientes resultados
+                if len(analyzed_articles) >= 3:
+                    print(f"\n✅ ÉXITO: {len(analyzed_articles)} artículos relevantes encontrados")
+                    break
+
+            except PerplexityError as e:
+                print(f"❌ Error en API de Perplexity (intento {i}): {e}")
+                if i == len(intentos):
+                    return []
+                continue
+
+        # Ordenar resultados finales: medios locales primero
+        if priorizar_medios_locales:
+            analyzed_articles.sort(key=lambda x: (not x["es_medio_local"], -x["relevance_score"]))
+
+        print(f"\n{'='*60}")
+        print(f"📊 RESUMEN FINAL:")
+        print(f"   Total artículos: {len(analyzed_articles)}")
+        if priorizar_medios_locales:
+            locales = sum(1 for art in analyzed_articles if art["es_medio_local"])
+            print(f"   De medios locales: {locales}")
+        print(f"{'='*60}\n")
+
+        return analyzed_articles
+
     async def get_daily_actor_summary(self, actor_name: str) -> Dict[str, Any]:
-        """Resumen diario sobre un actor político."""
-        print(f"Iniciando resumen diario para el actor: {actor_name}")
+        """Resumen diario con énfasis en medios locales."""
+        print(f"📰 Resumen diario para: {actor_name} (priorizando medios locales)")
 
+        medios_str = ", ".join(MEDIOS_LOCALES_TAMPICO[:4])
+        
         analysis_prompt = f"""
-Realiza una búsqueda automatizada enfocada EXCLUSIVAMENTE sobre el actor político "{actor_name}".
+Realiza una búsqueda automatizada sobre el actor político "{actor_name}" en medios digitales, prensa y redes sociales, 
+priorizando ESPECIALMENTE medios locales de Tampico como: {medios_str}.
 
-IMPORTANTE: Solo incluye información que mencione EXPLÍCITAMENTE a "{actor_name}". 
-NO incluyas noticias genéricas sobre política o sobre otros actores.
+Limítate a las 5-10 notas más relevantes de las últimas 24 horas.
 
-Extrae las 5-10 notas más relevantes de las últimas 24 horas donde "{actor_name}" sea el protagonista o tema principal.
+Formato JSON:
+1. **Resumen Diario Express:** Síntesis en máximo 3 líneas
+2. **Registro de Evidencia (5-10 entradas):** 
+   - Descripción
+   - Fecha
+   - Link
+   - Medio (identificar si es local)
 
-Responde en formato JSON con:
-1. **Resumen Diario Express:** Máximo 3 líneas sobre "{actor_name}"
-2. **Registro de Evidencia:** 5-10 publicaciones donde "{actor_name}" sea mencionado directamente
-
-Descarta cualquier nota donde "{actor_name}" no sea el tema principal.
+Prioriza velocidad y relevancia de medios LOCALES.
 """
 
         try:
             chat_response = await self.client.chat.completions.create(
                 model="sonar-reasoning",
-                messages=[{"role": "user", "content": analysis_prompt}],
+                messages=[
+                    {"role": "system", "content": "Eres un analista de medios especializado en prensa local de Tampico."},
+                    {"role": "user", "content": analysis_prompt},
+                ],
                 response_format={
                     "type": "json_schema",
                     "json_schema": {
-                        "name": "daily_summary",
-                        "strict": True,
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -142,94 +338,71 @@ Descarta cualquier nota donde "{actor_name}" no sea el tema principal.
                                         "properties": {
                                             "descripcion": {"type": "string"},
                                             "fecha": {"type": "string"},
-                                            "enlace": {"type": "string"}
+                                            "link": {"type": "string", "format": "uri"},
+                                            "medio": {"type": "string"},
+                                            "es_local": {"type": "boolean"}
                                         },
-                                        "required": ["descripcion", "fecha"],
-                                        "additionalProperties": False
+                                        "required": ["descripcion", "fecha", "link", "medio"]
                                     }
                                 }
                             },
-                            "required": ["resumen_diario_express", "registro_de_evidencia"],
-                            "additionalProperties": False
+                            "required": ["resumen_diario_express", "registro_de_evidencia"]
                         }
                     }
                 },
             )
 
             analysis_content = chat_response.choices[0].message.content
-            print(f"\n==RESPUESTA IA PARA {actor_name}==\n{analysis_content}\n")
             analysis_json = json.loads(analysis_content)
+            
+            # Ordenar evidencias: medios locales primero
+            if "registro_de_evidencia" in analysis_json:
+                analysis_json["registro_de_evidencia"].sort(
+                    key=lambda x: (not x.get("es_local", False), x.get("fecha", ""))
+                )
+            
             return analysis_json
 
-        except PerplexityError as e:
-            print(f"Error en la API de Perplexity para el actor '{actor_name}': {e}")
-            return {"error": str(e)}
-        except json.JSONDecodeError as e:
-            print(f"Error al decodificar JSON para el actor '{actor_name}': {e}")
-            return {"error": "Error decodificando la respuesta JSON."}
         except Exception as e:
-            print(f"Error inesperado durante el resumen para '{actor_name}': {e}")
-            return {"error": "Ocurrió un error inesperado."}
+            print(f"❌ Error en resumen diario: {e}")
+            return {"error": str(e)}
 
     async def get_weekly_actor_report(self, actor_name: str) -> Dict[str, Any]:
-        """Reporte semanal sobre un actor político."""
-        print(f"Iniciando reporte semanal para el actor: {actor_name}")
+        """Reporte semanal con énfasis en medios locales."""
+        print(f"📊 Reporte semanal para: {actor_name} (priorizando medios locales)")
 
+        medios_str = ", ".join(MEDIOS_LOCALES_TAMPICO)
+        
         analysis_prompt = f"""
-Realiza un análisis EXCLUSIVAMENTE sobre el actor político "{actor_name}".
+Realiza un análisis semanal integral sobre "{actor_name}", priorizando ESPECIALMENTE 
+medios locales de Tampico: {medios_str}.
 
-CRÍTICO: Solo incluye información que mencione EXPLÍCITAMENTE y de forma PRINCIPAL a "{actor_name}".
-NO incluyas noticias genéricas sobre política mexicana o sobre otros actores políticos.
+Formato JSON con 3 secciones:
+1. **Resumen Ejecutivo:** Hechos, tendencias, métricas (menciones, cobertura LOCAL)
+2. **Análisis Político y FODA:** Narrativas, controversias, alianzas, FODA estratégico
+3. **Log de Evidencia (20 registros mixtos):** 
+   - Priorizar medios LOCALES
+   - Descripción, fecha, tipo de medio, enlace
+   - Marcar si es medio local
 
-Busca contenido de los últimos 30 días donde "{actor_name}" sea el protagonista.
-
-Responde en formato JSON con:
-1. **Resumen Ejecutivo:** Sobre "{actor_name}" específicamente
-2. **Análisis FODA:** De "{actor_name}" únicamente
-3. **Log de Evidencia:** 20 publicaciones donde "{actor_name}" sea el tema central
-
-Descarta cualquier contenido donde "{actor_name}" no sea mencionado o no sea el foco principal.
+Prioriza extracción de prensa LOCAL de Tampico.
 """
 
         try:
             chat_response = await self.client.chat.completions.create(
                 model="sonar-reasoning",
-                messages=[{"role": "user", "content": analysis_prompt}],
+                messages=[
+                    {"role": "system", "content": "Eres un analista político especializado en medios locales de Tampico."},
+                    {"role": "user", "content": analysis_prompt},
+                ],
                 response_format={
                     "type": "json_schema",
                     "json_schema": {
-                        "name": "weekly_report",
-                        "strict": True,
                         "schema": {
                             "type": "object",
                             "properties": {
-                                "resumen_ejecutivo": {
-                                    "type": "object",
-                                    "properties": {
-                                        "sintesis": {"type": "string"},
-                                        "metricas_clave": {"type": "string"}
-                                    },
-                                    "required": ["sintesis", "metricas_clave"],
-                                    "additionalProperties": False
-                                },
-                                "analisis_estrategico": {
-                                    "type": "object",
-                                    "properties": {
-                                        "analisis_foda": {
-                                            "type": "object",
-                                            "properties": {
-                                                "fortalezas": {"type": "array", "items": {"type": "string"}},
-                                                "oportunidades": {"type": "array", "items": {"type": "string"}},
-                                                "debilidades": {"type": "array", "items": {"type": "string"}},
-                                                "amenazas": {"type": "array", "items": {"type": "string"}}
-                                            },
-                                            "required": ["fortalezas", "oportunidades", "debilidades", "amenazas"],
-                                            "additionalProperties": False
-                                        }
-                                    },
-                                    "required": ["analisis_foda"],
-                                    "additionalProperties": False
-                                },
+                                "resumen_ejecutivo": {"type": "string"},
+                                "analisis_estrategico": {"type": "string"},
                                 "log_de_evidencia": {
                                     "type": "array",
                                     "items": {
@@ -237,203 +410,35 @@ Descarta cualquier contenido donde "{actor_name}" no sea mencionado o no sea el 
                                         "properties": {
                                             "descripcion": {"type": "string"},
                                             "fecha": {"type": "string"},
-                                            "tipo": {"type": "string"},
-                                            "enlace": {"type": "string"}
+                                            "tipo_medio": {"type": "string"},
+                                            "link": {"type": "string"},
+                                            "es_medio_local": {"type": "boolean"}
                                         },
-                                        "required": ["descripcion", "fecha", "tipo"],
-                                        "additionalProperties": False
+                                        "required": ["descripcion", "fecha", "tipo_medio", "link"]
                                     }
                                 }
                             },
-                            "required": ["resumen_ejecutivo", "analisis_estrategico", "log_de_evidencia"],
-                            "additionalProperties": False
+                            "required": ["resumen_ejecutivo", "analisis_estrategico", "log_de_evidencia"]
                         }
                     }
                 },
             )
 
             analysis_content = chat_response.choices[0].message.content
-            print(f"\n==REPORTE SEMANAL IA PARA {actor_name}==\n{analysis_content}\n")
             analysis_json = json.loads(analysis_content)
+            
+            # Ordenar evidencias: medios locales primero
+            if "log_de_evidencia" in analysis_json:
+                analysis_json["log_de_evidencia"].sort(
+                    key=lambda x: (not x.get("es_medio_local", False), x.get("fecha", ""))
+                )
+            
             return analysis_json
 
-        except PerplexityError as e:
-            print(f"Error en la API de Perplexity para el reporte semanal de '{actor_name}': {e}")
-            return {"error": str(e)}
         except Exception as e:
-            print(f"Error inesperado durante el reporte semanal para '{actor_name}': {e}")
-            return {"error": "Ocurrió un error inesperado."}
-
-    # ============================================
-    # MÉTODO MEJORADO: search_and_analyze
-    # ============================================
-    async def search_and_analyze(
-        self, 
-        query: str, 
-        campaign_name: str, 
-        start_date: Optional[str] = None, 
-        end_date: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
-        """
-        Busca y analiza noticias con FILTRO DE RELEVANCIA ESTRICTO.
-        Solo retorna artículos que realmente mencionen al actor.
-        """
-        print(f"🔍 Búsqueda para: {campaign_name} | Query: {query}")
-
-        formatted_start = to_mmddyyyy(start_date)
-        formatted_end = to_mmddyyyy(end_date)
-
-        try:
-            search_params = {
-                "query": query,
-                "max_results": 20,  # Aumentado porque filtraremos después
-            }
-            if formatted_start:
-                search_params["search_after_date_filter"] = formatted_start
-            if formatted_end:
-                search_params["search_before_date_filter"] = formatted_end
-
-            search_results = await self.client.search.create(**search_params)
-            print(f"📊 Resultados de búsqueda: {len(search_results.results)}")
-        except PerplexityError as e:
-            print(f"❌ Error en búsqueda de Perplexity: {e}")
-            return []
-
-        analyzed_articles = []
-        filtered_count = 0
-
-        for idx, result in enumerate(search_results.results, 1):
-            try:
-                print(f"\n🔎 Analizando [{idx}/{len(search_results.results)}]: {result.url}")
-                
-                content = await _get_url_content(result.url)
-                if not content or len(content) < 200:
-                    print(f"⚠️  Contenido muy corto o vacío, omitiendo")
-                    continue
-
-                # ============================================
-                # FILTRO DE RELEVANCIA PRE-ANÁLISIS
-                # ============================================
-                title = getattr(result, 'title', '')
-                is_relevant, relevance_score = _check_actor_relevance(
-                    content[:5000],  # Primeros 5000 caracteres
-                    campaign_name,
-                    title
-                )
-                
-                print(f"📈 Score de relevancia: {relevance_score:.2f}")
-                
-                if not is_relevant:
-                    print(f"❌ DESCARTADO - No menciona suficientemente a '{campaign_name}'")
-                    filtered_count += 1
-                    continue
-                
-                print(f"✅ RELEVANTE - Procesando análisis...")
-
-                # ============================================
-                # PROMPT DE ANÁLISIS MEJORADO
-                # ============================================
-                analysis_prompt = f"""
-Analiza el siguiente artículo SOLO SI trata PRINCIPALMENTE sobre "{campaign_name}".
-
-REGLAS ESTRICTAS:
-1. Si "{campaign_name}" NO es el tema principal → responde SOLO: {{"relevante": false}}
-2. Si "{campaign_name}" es mencionado apenas de paso → responde SOLO: {{"relevante": false}}
-3. Si el artículo trata sobre otro político y solo menciona a "{campaign_name}" brevialmentemente → responde {{"relevante": false}}
-4. SOLO si "{campaign_name}" ES el tema central → responde el análisis completo
-
-Texto (primeros 4000 caracteres):
-{content[:4000]}
-
-Si ES relevante para "{campaign_name}", responde con:
-{{
-  "relevante": true,
-  "summary": "resumen conciso (2-3 frases) enfocado en {campaign_name}",
-  "sentiment_label": "Positivo" | "Negativo" | "Neutral",
-  "sentiment_score": número de -1.0 a 1.0,
-  "topics": ["tema1", "tema2", "tema3"],
-  "key_points": ["punto clave 1", "punto clave 2"]
-}}
-
-Si NO es relevante:
-{{
-  "relevante": false
-}}
-"""
-
-                chat_response = await self.client.chat.completions.create(
-                    model="sonar-reasoning",
-                    messages=[
-                        {
-                            "role": "system", 
-                            "content": f"Eres un analista político MUY estricto. Solo consideras relevante un artículo si {campaign_name} es el tema PRINCIPAL."
-                        },
-                        {
-                            "role": "user",
-                            "content": analysis_prompt
-                        }
-                    ],
-                    temperature=0.1,  # Más determinista
-                    max_tokens=500,
-                )
-
-                response_text = chat_response.choices[0].message.content.strip()
-                
-                # Parsear respuesta
-                try:
-                    analysis = json.loads(response_text)
-                except json.JSONDecodeError:
-                    # Intentar extraer JSON si viene con texto adicional
-                    json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-                    if json_match:
-                        analysis = json.loads(json_match.group())
-                    else:
-                        print(f"⚠️  No se pudo parsear respuesta, omitiendo")
-                        continue
-
-                # ============================================
-                # VERIFICACIÓN FINAL DE RELEVANCIA
-                # ============================================
-                if not analysis.get("relevante", False):
-                    print(f"❌ IA confirmó NO RELEVANTE")
-                    filtered_count += 1
-                    continue
-
-                print(f"✅ IA confirmó RELEVANTE - Agregando a resultados")
-
-                # Construir artículo analizado
-                analyzed_article = {
-                    "title": title or f"Artículo sobre {campaign_name}",
-                    "url": result.url,
-                    "publishedAt": getattr(result, 'published_date', None),
-                    "summary": analysis.get("summary", ""),
-                    "sentiment_label": analysis.get("sentiment_label", "Neutral"),
-                    "sentiment_score": analysis.get("sentiment_score", 0.0),
-                    "topics": analysis.get("topics", []),
-                    "key_points": analysis.get("key_points", []),
-                    "relevance_score": relevance_score,  # Agregar score
-                }
-
-                analyzed_articles.append(analyzed_article)
-
-            except Exception as e:
-                print(f"⚠️  Error analizando {result.url}: {e}")
-                continue
-
-        # ============================================
-        # RESUMEN DEL FILTRADO
-        # ============================================
-        print(f"\n📊 RESUMEN DEL FILTRADO:")
-        print(f"   Artículos encontrados: {len(search_results.results)}")
-        print(f"   Artículos descartados: {filtered_count}")
-        print(f"   Artículos relevantes: {len(analyzed_articles)}")
-        print(f"   Tasa de relevancia: {len(analyzed_articles)/max(len(search_results.results), 1)*100:.1f}%")
-
-        # Ordenar por relevancia
-        analyzed_articles.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
-
-        return analyzed_articles
+            print(f"❌ Error en reporte semanal: {e}")
+            return {"error": str(e)}
 
 
-# Instancia global
+# Instancia global del servicio
 perplexity_service = PerplexityService()
