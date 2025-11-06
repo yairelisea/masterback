@@ -11,13 +11,3 @@ __pycache__/
 # Archivos de configuración de editores
 .vscode/
 .idea/
-app/db.py
-requirements.txt
-.gitignore
-bbx.db
-requirements.txt
-run.bat
-app/db.py
-.gitignore
-requirements.txt
-app/db.py
