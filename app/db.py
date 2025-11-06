@@ -7,9 +7,13 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,   # ✅ ESTE es el correcto
     AsyncSession,
 )
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Normaliza la URL para psycopg (SQLAlchemy 2.x)
 DATABASE_URL = os.getenv("DATABASE_URL", "")
+print("DATABASE_URL:", DATABASE_URL)
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg://", 1)
 elif DATABASE_URL.startswith("postgresql://") and "+psycopg" not in DATABASE_URL:

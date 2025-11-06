@@ -165,6 +165,21 @@ def crear_analisis_fallback(title: str, url: str, relevance_score: float, es_loc
         "_fallback": True  # Marca que fue creado con fallback
     }
 
+def _clean_json_content(content: str) -> str:
+        """Limpia el contenido para asegurar JSON válido."""
+        if not content:
+            return "{}"
+        
+        # Eliminar caracteres no ASCII y espacios al inicio/fin
+        content = content.strip()
+        
+        # Buscar el primer '{' y último '}'
+        start = content.find('{')
+        end = content.rfind('}')
+        
+        if start >= 0 and end > start:
+            return content[start:end + 1]
+        return "{}"
 
 class PerplexityService:
     def __init__(self):
@@ -449,7 +464,7 @@ Texto: {content[:2000]}
         print(f"{'='*70}\n")
 
         return analyzed_articles
-
+    
     async def get_daily_actor_summary(self, actor_name: str) -> Dict[str, Any]:
         """Resumen diario con énfasis en medios locales de múltiples estados."""
         print(f"\n📰 Generando resumen diario para: {actor_name}")
@@ -477,6 +492,8 @@ Responde SOLO con JSON válido (sin texto antes o después):
   ]
 }}
 """
+        
+        # print(analysis_prompt)
 
         try:
             chat_response = await self.client.chat.completions.create(
@@ -528,7 +545,14 @@ Responde SOLO con JSON válido (sin texto antes o después):
                 }
             
             try:
-                analysis_json = json.loads(analysis_content)
+                # print("analysis_content: ")
+                # print(analysis_content)
+                # analysis_json = json.loads(analysis_content)
+                # Limpiar y validar el contenido JSON
+                cleaned_content = _clean_json_content(analysis_content)
+                print(f"🔍 Contenido JSON limpio:\n{cleaned_content}")
+            
+                analysis_json = json.loads(cleaned_content)
             except json.JSONDecodeError as je:
                 print(f"⚠️ Error decodificando JSON en resumen diario: {je}")
                 # NUNCA retornar con clave "error"
