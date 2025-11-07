@@ -181,6 +181,43 @@ def _clean_json_content(content: str) -> str:
             return content[start:end + 1]
         return "{}"
 
+def fecha_larga_es(date_input: Optional[Any] = None) -> str:
+    """
+    Devuelve la fecha en formato '6 de noviembre de 2025'.
+    date_input puede ser:
+      - None (usa la fecha actual)
+      - datetime
+      - str en formatos: 'YYYY-MM-DD', 'MM/DD/YYYY', 'DD/MM/YYYY' o ISO
+    """
+    meses = [
+        "enero", "febrero", "marzo", "abril", "mayo", "junio",
+        "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"
+    ]
+
+    dt = None
+    if date_input is None:
+        dt = datetime.now()
+    elif isinstance(date_input, datetime):
+        dt = date_input
+    else:
+        s = str(date_input).strip()
+        # Intentar formatos comunes
+        for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%d/%m/%Y"):
+            try:
+                dt = datetime.strptime(s, fmt)
+                break
+            except Exception:
+                continue
+        # Intentar ISO como última opción
+        if dt is None:
+            try:
+                dt = datetime.fromisoformat(s)
+            except Exception:
+                print(f"Formato de fecha no reconocido: '{s}', usando fecha actual")
+                dt = datetime.now()
+
+    return f"{dt.day} de {meses[dt.month - 1]} de {dt.year}"
+
 class PerplexityService:
     def __init__(self):
         self.client = AsyncPerplexity()
@@ -469,24 +506,30 @@ Texto: {content[:2000]}
         """Resumen diario con énfasis en medios locales de múltiples estados."""
         print(f"\n📰 Generando resumen diario para: {actor_name}")
 
+        hoy = fecha_larga_es()
+        # print(hoy) 
+
         medios_ejemplos = "Sol de Tampico, Milenio, El Porvenir, Diario de Querétaro, Criterio Hidalgo"
         
-        analysis_prompt = f"""
-Realiza una búsqueda sobre "{actor_name}" en medios digitales, priorizando medios locales de:
-- Tamaulipas (Sol de Tampico, Telediario, Expreso, Hoy Tamaulipas)
-- Nuevo León (El Porvenir, Info7, Milenio Monterrey, Multimedios)
-- Querétaro (Diario de Querétaro, AM Querétaro, El Sol de Querétaro)
-- Hidalgo (Criterio Hidalgo, El Independiente, El Sol Hidalgo)
+        analysis_prompt = f"""Busca información sobre "{actor_name}" EXCLUSIVAMENTE en publicaciones de HOY ({hoy}) en estos medios digitales locales:
+TAMAULIPAS: Sol de Tampico, Telediario, Expreso, Hoy Tamaulipas
+NUEVO LEÓN: El Porvenir, Info7, Milenio Monterrey, Multimedios
+QUERÉTARO: Diario de Querétaro, AM Querétaro, El Sol de Querétaro
+HIDALGO: Criterio Hidalgo, El Independiente, El Sol Hidalgo
 
-Responde SOLO con JSON válido (sin texto antes o después):
+INSTRUCCIÓN CRÍTICA: Responde ÚNICAMENTE con JSON válido. Sin explicaciones, sin texto adicional, solo JSON.
+
+Si no hay publicaciones de hoy, devuelve un JSON vacío en la estructura solicitada.
+
+FORMATO REQUERIDO - Responde SOLO esto:
 {{
-  "resumen_diario_express": "Texto en máximo 3 líneas",
+  "resumen_diario_express": "máximo 3 líneas describiendo hallazgos",
   "registro_de_evidencia": [
     {{
-      "descripcion": "Descripción",
+      "descripcion": "texto de la publicación",
       "fecha": "YYYY-MM-DD",
-      "link": "https://...",
-      "medio": "Nombre del medio",
+      "link": "URL completa",
+      "medio": "nombre exacto del medio",
       "es_local": true
     }}
   ]

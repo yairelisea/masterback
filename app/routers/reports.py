@@ -15,6 +15,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_session
 from .. import models
+from sqlalchemy.orm import selectinload
+from datetime import date, datetime, timedelta
+from pydantic import BaseModel, Field
 
 # Router mounted in app.main as: app.include_router(reports.router)
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -86,6 +89,8 @@ async def _proxy_pdf_service(payload: Dict[str, Any], suggested_name: str) -> St
 
     url = f"{pdf_service}/pdf"  # microservice route
 
+    print("Proxying PDF request to:", url)
+
     try:
         # Use streaming to avoid any transformations; ensure raw bytes.
         async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
@@ -95,6 +100,11 @@ async def _proxy_pdf_service(payload: Dict[str, Any], suggested_name: str) -> St
                 json=payload,
                 headers={"Accept": "application/pdf"},
             ) as resp:
+                print(f"PDF service responded with status: {resp.status_code}")
+                print(f"Response headers: {resp.headers}")
+                print(f"Response Content-Type: {resp.headers.get('Content-Type')}")
+                print(f"Response Content-Disposition: {resp.headers.get('Content-Disposition')}")
+                print(resp.stream)
                 if resp.status_code >= 300:
                     # Read error payload as text for diagnostics
                     err_text = await resp.aread()
@@ -108,7 +118,10 @@ async def _proxy_pdf_service(payload: Dict[str, Any], suggested_name: str) -> St
                 async for chunk in resp.aiter_bytes():
                     if chunk:
                         chunks.append(chunk)
+                print(f"Received {len(chunks)} chunks from PDF service")
                 pdf_bytes = b"".join(chunks)
+
+                print(f"Received PDF response, size: {len(pdf_bytes)} bytes")
 
                 # Validate magic header
                 _assert_pdf_bytes(pdf_bytes)
@@ -117,6 +130,8 @@ async def _proxy_pdf_service(payload: Dict[str, Any], suggested_name: str) -> St
                 disp = resp.headers.get("Content-Disposition") or resp.headers.get("content-disposition") or ""
                 filename_from_service = _extract_filename(disp)
                 final_name = safe_filename(filename_from_service or suggested_name)
+
+                print(f"Generated PDF report: {final_name}, size: {len(pdf_bytes)} bytes")
 
         # Send exactly the bytes we received
         return StreamingResponse(
@@ -135,6 +150,15 @@ async def _proxy_pdf_service(payload: Dict[str, Any], suggested_name: str) -> St
         # Network/timeout/format error, etc.
         raise HTTPException(status_code=502, detail=f"PDF proxy failed: {e}")
 
+def parse_date(date_str: str) -> date:
+    """Convert string date to date object. Accepts YYYY-MM-DD format."""
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid date format. Use YYYY-MM-DD format. Error: {str(e)}"
+        )
 
 @router.post("/pdf")
 async def post_report(payload: Dict[str, Any], request: Request, db: AsyncSession = Depends(get_session)):
@@ -208,8 +232,11 @@ async def post_report(payload: Dict[str, Any], request: Request, db: AsyncSessio
     return await _proxy_pdf_service(data, suggested_name)
 
 class DailyNewsReportRequest(BaseModel):
-    campaignId: str
-    reportDate: date = date.today()
+    campaignId: str = Field(..., description="Campaign ID")
+    reportDate: str = Field(
+        default_factory=lambda: date.today().isoformat(),
+        description="Report date in YYYY-MM-DD format"
+    )
 
 @router.post("/daily-news")
 async def daily_news_report(
@@ -219,16 +246,36 @@ async def daily_news_report(
     """
     Generates a PDF report for the daily news of a campaign.
     """
+    report_date = parse_date(payload.reportDate)
+
+    print(f"Received payload: {payload}")
     campaign = await db.get(models.Campaign, payload.campaignId)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
     # Fetch items and analyses for the specified date
-    start_of_day = datetime.combine(payload.reportDate, datetime.min.time())
-    end_of_day = datetime.combine(payload.reportDate, datetime.max.time())
+    # start_of_day = datetime.combine(payload.reportDate, datetime.min.time())
+    # end_of_day = datetime.combine(payload.reportDate, datetime.max.time())
+    start_of_day = datetime.combine(report_date, datetime.min.time())
+    end_of_day = datetime.combine(report_date, datetime.max.time())
 
+    print(start_of_day)
+    print(end_of_day)
+
+    # items_q = (
+    #     select(models.IngestedItem)
+    #     .where(
+    #        models.IngestedItem.campaignId == payload.campaignId,
+    #         models.IngestedItem.createdAt >= start_of_day,
+    #        models.IngestedItem.createdAt <= end_of_day,
+    #     )
+    #     .order_by(models.IngestedItem.createdAt.desc())
+    # )
+    # items = (await db.execute(items_q)).scalars().all()
+    # Modificada la consulta para incluir analysis
     items_q = (
         select(models.IngestedItem)
+        .options(selectinload(models.IngestedItem.analysis))  # Añadir esta línea
         .where(
             models.IngestedItem.campaignId == payload.campaignId,
             models.IngestedItem.createdAt >= start_of_day,
@@ -237,6 +284,8 @@ async def daily_news_report(
         .order_by(models.IngestedItem.createdAt.desc())
     )
     items = (await db.execute(items_q)).scalars().all()
+
+    print(f"Fetched {len(items)} items for report.")
 
     # Prepare data for the PDF service
     report_items = []
@@ -250,7 +299,7 @@ async def daily_news_report(
                 "sentiment_label": item.analysis.tone,
                 "sentiment_score": item.analysis.sentiment,
                 "topics": item.analysis.topics,
-                "key_points": item.analysis.key_points,
+                #"key_points": item.analysis.key_points,
             })
 
     pdf_payload = {
@@ -259,11 +308,13 @@ async def daily_news_report(
             "name": campaign.name,
             "query": campaign.query,
         },
-        "report_date": payload.reportDate.isoformat(),
+        "report_date": report_date.isoformat(), #payload.reportDate.isoformat(),
         "items": report_items,
     }
 
-    suggested_name = f"Reporte_Diario_{campaign.name}_{payload.reportDate.isoformat()}"
+
+
+    suggested_name = f"Reporte_Diario_{campaign.name}_{report_date.isoformat()}"
     return await _proxy_pdf_service(pdf_payload, suggested_name)
 
 class DigitalPerceptionReportRequest(BaseModel):
