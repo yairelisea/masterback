@@ -254,3 +254,50 @@ class CampaignUpdate(BaseModel):
 
 class UrlsToAnalyze(BaseModel):
     urls: List[HttpUrl]
+
+# =========================================================
+# URL Analyzer - Analizador de Percepción Digital
+# =========================================================
+from typing import Literal
+
+class Politician(BaseModel):
+    name: str = Field(..., description="Nombre del personaje")
+    office: Optional[str] = Field(None, description="Cargo opcional")
+
+class PostAI(BaseModel):
+    summary: str
+    topic: Optional[str] = None
+    subtopics: List[str] = []
+    sentiment: Literal["negative", "neutral", "positive"] = "neutral"
+    stance: Literal["against", "neutral", "favor", "none"] = "none"
+    entities: List[str] = []
+    toxicity: int = 0
+    risk_note: Optional[str] = None
+    opportunities: List[str] = []
+
+class PostMeta(BaseModel):
+    platform: str
+    url: str
+    title: Optional[str] = None
+    description: Optional[str] = None
+    author_name: Optional[str] = None
+    published_at: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    debug: Optional[str] = None
+    likes: Optional[int] = None
+    shares: Optional[int] = None
+    comments: Optional[int] = None
+
+class PostResult(BaseModel):
+    meta: PostMeta
+    ai: PostAI
+
+class AnalyzeURLRequest(BaseModel):
+    urls: List[HttpUrl]
+    politician: Politician
+
+class AnalyzeURLResponse(BaseModel):
+    politician: Politician
+    results: List[PostResult]
+    summary: Dict[str, Any]
+    metadata: Optional[Dict[str, Any]] = None
