@@ -11,15 +11,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session, SessionLocal
 from ..deps import get_current_user
-from ..models import Campaign, User, PlanTier, Analysis, IngestedItem, ItemStatus, SourceLink
+from ..models import Campaign, User, PlanTier, Analysis, IngestedItem, ItemStatus, SourceLink, MonitoringSource
 from ..schemas import (
     AdminUserOut,
     CampaignOut,
     PlanTierEnum,
+    MonitoringSourceBrief,
 )
 from ..schemas import IngestedItemOut, AnalysisOut
 from sqlalchemy import func
 from sqlalchemy import text
+from sqlalchemy.orm import selectinload
 
 router = APIRouter(prefix="/admin", tags=["admin-tools"])
 
@@ -96,8 +98,42 @@ def _to_user_out(u: User) -> AdminUserOut:
     return AdminUserOut.model_validate(u)
 
 
-def _to_campaign_out(c: Campaign) -> CampaignOut:
-    return CampaignOut.model_validate(c)
+def _to_campaign_out(c: Campaign, monitoring_sources: list = None) -> CampaignOut:
+    """Convierte un Campaign a CampaignOut incluyendo monitoring_sources"""
+    data = {
+        "id": c.id,
+        "name": c.name,
+        "query": c.query,
+        "size": c.size,
+        "days_back": c.days_back,
+        "lang": c.lang,
+        "country": c.country,
+        "city_keywords": c.city_keywords,
+        "plan": c.plan,
+        "autoEnabled": c.autoEnabled,
+        "userId": c.userId,
+        "createdAt": c.createdAt,
+        "news_analysis": getattr(c, "news_analysis", None),
+        "monitoring_sources": None,
+        "monitoring_sources_count": 0,
+    }
+
+    if monitoring_sources:
+        data["monitoring_sources"] = [
+            MonitoringSourceBrief(
+                id=s.id,
+                url=s.url,
+                platform=s.platform.value if hasattr(s.platform, 'value') else str(s.platform),
+                name=s.name,
+                status=s.status.value if hasattr(s.status, 'value') else str(s.status),
+                lastRunAt=s.lastRunAt,
+                totalPostsCollected=s.totalPostsCollected or 0,
+            )
+            for s in monitoring_sources
+        ]
+        data["monitoring_sources_count"] = len(monitoring_sources)
+
+    return CampaignOut(**data)
 
 
 # -----------------------------
@@ -197,9 +233,14 @@ async def admin_list_campaigns(
     _: dict = Depends(get_current_admin),
     db: AsyncSession = Depends(get_session),
 ):
-    q = select(Campaign).order_by(Campaign.createdAt.desc())
+    # Cargar campañas con monitoring_sources
+    q = (
+        select(Campaign)
+        .options(selectinload(Campaign.monitoring_sources))
+        .order_by(Campaign.createdAt.desc())
+    )
     rows = (await db.execute(q)).scalars().all()
-    return [_to_campaign_out(c) for c in rows]
+    return [_to_campaign_out(c, c.monitoring_sources) for c in rows]
 
 
 @router.get("/campaigns/{campaign_id}", response_model=CampaignOut)
@@ -208,10 +249,17 @@ async def admin_get_campaign(
     _: dict = Depends(get_current_admin),
     db: AsyncSession = Depends(get_session),
 ):
-    camp = await db.get(Campaign, campaign_id)
+    # Cargar campaña con monitoring_sources usando selectinload
+    q = (
+        select(Campaign)
+        .options(selectinload(Campaign.monitoring_sources))
+        .where(Campaign.id == campaign_id)
+    )
+    result = await db.execute(q)
+    camp = result.scalar_one_or_none()
     if not camp:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    return _to_campaign_out(camp)
+    return _to_campaign_out(camp, camp.monitoring_sources)
 
 
 @router.post("/campaigns", response_model=CampaignOut)
@@ -358,7 +406,14 @@ async def admin_campaign_overview(
     _: dict = Depends(get_current_admin),
     db: AsyncSession = Depends(get_session),
 ):
-    camp = await db.get(Campaign, campaign_id)
+    # Cargar campaña con monitoring_sources
+    q = (
+        select(Campaign)
+        .options(selectinload(Campaign.monitoring_sources))
+        .where(Campaign.id == campaign_id)
+    )
+    result = await db.execute(q)
+    camp = result.scalar_one_or_none()
     if not camp:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
@@ -391,7 +446,7 @@ async def admin_campaign_overview(
     ).scalar_one()
 
     return {
-        "campaign": _to_campaign_out(camp).model_dump(),
+        "campaign": _to_campaign_out(camp, camp.monitoring_sources).model_dump(),
         "items": {
             "total": total_items,
             "by_status": counts,
