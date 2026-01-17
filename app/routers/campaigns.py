@@ -330,8 +330,8 @@ async def list_campaign_monitoring_sources(
 
     **Solo accesible para administradores.**
     """
-    # Solo admins pueden acceder
-    if not current_user.get("isAdmin"):
+    # Solo admins pueden acceder (verificar role o isAdmin)
+    if current_user.get("role") != "admin" and not current_user.get("isAdmin"):
         raise HTTPException(status_code=403, detail="Admin access required")
 
     c = await db.get(Campaign, campaign_id)
@@ -402,8 +402,8 @@ async def add_monitoring_source(
     }
     ```
     """
-    # Solo admins pueden agregar fuentes
-    if not current_user.get("isAdmin"):
+    # Solo admins pueden agregar fuentes (verificar role o isAdmin)
+    if current_user.get("role") != "admin" and not current_user.get("isAdmin"):
         raise HTTPException(status_code=403, detail="Admin access required")
 
     # Verificar campaña
@@ -470,8 +470,8 @@ async def delete_monitoring_source(
 
     **Solo accesible para administradores.**
     """
-    # Solo admins pueden eliminar fuentes
-    if not current_user.get("isAdmin"):
+    # Solo admins pueden eliminar fuentes (verificar role o isAdmin)
+    if current_user.get("role") != "admin" and not current_user.get("isAdmin"):
         raise HTTPException(status_code=403, detail="Admin access required")
 
     # Verificar campaña
