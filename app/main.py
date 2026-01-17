@@ -16,7 +16,7 @@ from .db import engine
 from .scheduler import start_scheduler
 
 # Routers (ajusta si alguno no existe en tu proyecto)
-from .routers import campaigns, sources, ingest, analyses, news, ai_analysis, auth, admin_tools, url_analyzer
+from .routers import campaigns, sources, ingest, analyses, news, ai_analysis, auth, admin_tools, url_analyzer, monitoring
 
 
 # ---------- Operation IDs únicos (evita warnings en /docs) ----------
@@ -93,6 +93,8 @@ app.include_router(admin_tools.router)
 app.include_router(items.router)
 # URL Analyzer (solo para admins)
 app.include_router(url_analyzer.router)
+# Social Monitoring (solo para admins)
+app.include_router(monitoring.router)
 
 # ---------- Startup: crea tablas e índices si no existen ----------
 @app.on_event("startup")

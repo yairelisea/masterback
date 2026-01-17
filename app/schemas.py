@@ -301,3 +301,70 @@ class AnalyzeURLResponse(BaseModel):
     results: List[PostResult]
     summary: Dict[str, Any]
     metadata: Optional[Dict[str, Any]] = None
+
+# =========================================================
+# Social Monitoring - Monitoreo de Redes Sociales
+# =========================================================
+from enum import Enum as PyEnum
+
+class SocialPlatformEnum(str, PyEnum):
+    FACEBOOK = "facebook"
+    TWITTER = "twitter"
+    INSTAGRAM = "instagram"
+    TIKTOK = "tiktok"
+    YOUTUBE = "youtube"
+
+class MonitoringStatusEnum(str, PyEnum):
+    ACTIVE = "active"
+    PAUSED = "paused"
+    ERROR = "error"
+    PENDING = "pending"
+
+class RiskLevelEnum(str, PyEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+class MonitoringSourceCreate(BaseModel):
+    url: HttpUrl
+    platform: SocialPlatformEnum
+    name: Optional[str] = None
+
+class MonitoringSourceOut(BaseModel):
+    id: str
+    campaignId: str
+    url: str
+    platform: SocialPlatformEnum
+    name: Optional[str]
+    status: MonitoringStatusEnum
+    lastRunAt: Optional[datetime] = None
+    lastRunStatus: Optional[str] = None
+    lastRunPostsCount: Optional[int] = None
+    totalPostsCollected: int = 0
+    errorCount: int = 0
+    createdAt: datetime
+
+    class Config:
+        from_attributes = True
+
+class AnalyticResultOut(BaseModel):
+    id: str
+    postUrl: Optional[str] = None
+    postContent: Optional[str] = None
+    postAuthor: Optional[str] = None
+    postDate: Optional[datetime] = None
+    likes: Optional[int] = None
+    shares: Optional[int] = None
+    comments: Optional[int] = None
+    sentiment: Optional[str] = None
+    sentimentScore: Optional[float] = None
+    riskLevel: Optional[RiskLevelEnum] = None
+    riskScore: Optional[int] = None
+    topics: Optional[List[str]] = None
+    summary: Optional[str] = None
+    requiresAttention: bool = False
+    createdAt: datetime
+
+    class Config:
+        from_attributes = True
