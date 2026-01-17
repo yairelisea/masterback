@@ -128,20 +128,32 @@ async def get_apify_status(
     token_configured = bool(APIFY_API_TOKEN)
     token_preview = f"{APIFY_API_TOKEN[:8]}...{APIFY_API_TOKEN[-4:]}" if APIFY_API_TOKEN and len(APIFY_API_TOKEN) > 12 else "NO CONFIGURADO"
 
-    # Contar SourceLinks en la BD
+    # Contar SourceLinks en la BD (tabla source_links)
     source_links_count = await db.execute(select(func.count(SourceLink.id)))
-    total_sources = source_links_count.scalar() or 0
+    total_source_links = source_links_count.scalar() or 0
+
+    # Contar MonitoringSource en la BD (tabla monitoring_sources - usada por el frontend)
+    monitoring_sources_count = await db.execute(select(func.count(MonitoringSource.id)))
+    total_monitoring_sources = monitoring_sources_count.scalar() or 0
+
+    total_sources = total_source_links + total_monitoring_sources
 
     # Obtener ejemplo de SourceLinks
-    sample_sources = await db.execute(select(SourceLink).limit(5))
-    sources_sample = [{"url": sl.url, "type": sl.type.value if sl.type else None, "campaignId": sl.campaignId} for sl in sample_sources.scalars().all()]
+    sample_source_links = await db.execute(select(SourceLink).limit(3))
+    source_links_sample = [{"url": sl.url, "type": sl.type.value if sl.type else None, "campaignId": sl.campaignId, "tabla": "source_links"} for sl in sample_source_links.scalars().all()]
+
+    # Obtener ejemplo de MonitoringSources
+    sample_monitoring = await db.execute(select(MonitoringSource).limit(3))
+    monitoring_sample = [{"url": ms.url, "platform": ms.platform, "campaignId": ms.campaignId, "tabla": "monitoring_sources"} for ms in sample_monitoring.scalars().all()]
 
     return {
         "apify_client_available": APIFY_AVAILABLE,
         "apify_token_configured": token_configured,
         "apify_token_preview": token_preview,
-        "total_source_links": total_sources,
-        "source_links_sample": sources_sample,
+        "total_sources": total_sources,
+        "source_links_count": total_source_links,
+        "monitoring_sources_count": total_monitoring_sources,
+        "sources_sample": source_links_sample + monitoring_sample,
         "env_check": {
             "APIFY_API_TOKEN": "SET" if os.getenv("APIFY_API_TOKEN") else "NOT SET",
             "PERPLEXITY_API_KEY": "SET" if os.getenv("PERPLEXITY_API_KEY") else "NOT SET",
@@ -151,7 +163,7 @@ async def get_apify_status(
         else [
             "Instalar apify-client: pip install apify-client" if not APIFY_AVAILABLE else None,
             "Configurar APIFY_API_TOKEN en variables de entorno" if not token_configured else None,
-            "Agregar SourceLinks (URLs de medios) a las campañas" if total_sources == 0 else None,
+            "Agregar fuentes desde el panel de admin (Fuentes de Monitoreo)" if total_sources == 0 else None,
         ]
     }
 
@@ -358,29 +370,42 @@ async def get_weekly_report(
         topic_counts = Counter(all_topics)
         top_topics = [{"tema": t, "menciones": c} for t, c in topic_counts.most_common(10)]
 
-        # Si no hay datos locales, buscar SourceLinks de la campaña y usar Apify para scraping
+        # Si no hay datos locales, buscar fuentes de la campaña y usar Apify para scraping
         if total_menciones == 0:
-            print(f"⚠️ No hay datos locales para '{q}', buscando SourceLinks...")
+            print(f"⚠️ No hay datos locales para '{q}', buscando fuentes configuradas...")
 
             # Obtener las fuentes (URLs) configuradas para esta campaña
+            # 1. Primero buscar en SourceLink (tabla source_links)
             source_links_query = select(SourceLink).where(SourceLink.campaignId == campaign.id)
             source_links_result = await db.execute(source_links_query)
             source_links = source_links_result.scalars().all()
 
-            print(f"📎 SourceLinks encontrados: {len(source_links)}")
+            # 2. También buscar en MonitoringSource (tabla monitoring_sources - usada por el frontend)
+            monitoring_sources_query = select(MonitoringSource).where(MonitoringSource.campaignId == campaign.id)
+            monitoring_sources_result = await db.execute(monitoring_sources_query)
+            monitoring_sources = monitoring_sources_result.scalars().all()
+
+            # Combinar ambas fuentes en una lista unificada
+            all_source_urls = []
+            for sl in source_links:
+                all_source_urls.append({"url": sl.url, "source": "source_links"})
+            for ms in monitoring_sources:
+                all_source_urls.append({"url": ms.url, "source": "monitoring_sources"})
+
+            print(f"📎 Fuentes encontradas: {len(source_links)} SourceLinks + {len(monitoring_sources)} MonitoringSources = {len(all_source_urls)} total")
 
             actor_name = campaign.query or campaign.name or q
             scraped_articles = []
 
-            if source_links and APIFY_AVAILABLE:
-                # Usar Apify para hacer scraping de cada SourceLink
-                print(f"🔗 Usando Apify para scraping de {len(source_links)} fuentes...")
+            if all_source_urls and APIFY_AVAILABLE:
+                # Usar Apify para hacer scraping de cada fuente
+                print(f"🔗 Usando Apify para scraping de {len(all_source_urls)} fuentes...")
 
-                for sl in source_links:
+                for src in all_source_urls:
                     try:
-                        print(f"📰 Scraping: {sl.url}")
+                        print(f"📰 Scraping: {src['url']} (de {src['source']})")
                         articles = await scrape_news_site(
-                            site_url=sl.url,
+                            site_url=src['url'],
                             candidate_name=actor_name,
                             max_posts=20,
                             days_back=7
@@ -391,7 +416,7 @@ async def get_weekly_report(
                         else:
                             print(f"   ⚠️ No se encontraron artículos relevantes")
                     except Exception as e:
-                        print(f"   ❌ Error en scraping de {sl.url}: {e}")
+                        print(f"   ❌ Error en scraping de {src['url']}: {e}")
                         continue
 
                 print(f"📊 Total artículos scrapeados: {len(scraped_articles)}")
@@ -419,7 +444,7 @@ async def get_weekly_report(
 
                     total_menciones = len(scraped_articles)
                     source_type = "apify_scraping"
-                    note = f"Scraping con Apify de {len(source_links)} fuentes: {len(scraped_articles)} artículos"
+                    note = f"Scraping con Apify de {len(all_source_urls)} fuentes: {len(scraped_articles)} artículos"
 
                     # Enviar contenido scrapeado a Perplexity para análisis
                     print(f"🤖 Enviando {len(contenido_para_analisis)} artículos scrapeados a Perplexity...")
@@ -429,7 +454,7 @@ async def get_weekly_report(
                             data=contenido_para_analisis[:30],
                             metricas={
                                 "total": total_menciones,
-                                "fuentes_scrapeadas": len(source_links),
+                                "fuentes_scrapeadas": len(all_source_urls),
                                 "articulos_encontrados": len(scraped_articles),
                             }
                         )
@@ -449,7 +474,7 @@ async def get_weekly_report(
                         "log_de_evidencia": log_evidencia[:50],
                         "metricas": {
                             "total_menciones": total_menciones,
-                            "fuentes_analizadas": len(source_links),
+                            "fuentes_analizadas": len(all_source_urls),
                             "articulos_encontrados": len(scraped_articles),
                         },
                         "periodo": {
@@ -464,15 +489,15 @@ async def get_weekly_report(
                     source_type = "perplexity_fallback"
                     note = f"Apify no encontró menciones de '{actor_name}' en las fuentes. Se usó búsqueda web."
 
-            elif source_links and not APIFY_AVAILABLE:
+            elif all_source_urls and not APIFY_AVAILABLE:
                 # Apify no está disponible, usar Perplexity directamente
                 print(f"⚠️ Apify no disponible, usando Perplexity búsqueda web")
                 weekly_report_data = await perplexity_service.get_weekly_actor_report(actor_name=actor_name)
                 source_type = "perplexity_no_apify"
                 note = "Apify no está configurado. Se usó búsqueda web de Perplexity."
             else:
-                # Si no hay SourceLinks, usar búsqueda web general
-                print(f"⚠️ No hay SourceLinks, usando Perplexity búsqueda web")
+                # Si no hay fuentes configuradas, usar búsqueda web general
+                print(f"⚠️ No hay fuentes configuradas, usando Perplexity búsqueda web")
                 weekly_report_data = await perplexity_service.get_weekly_actor_report(actor_name=actor_name)
                 source_type = "perplexity_web_search"
                 note = "No hay datos de monitoreo local ni fuentes configuradas, se usó búsqueda web"
@@ -486,7 +511,7 @@ async def get_weekly_report(
                     reportData=weekly_report_data,
                     summary=(weekly_report_data.get("resumen_ejecutivo", {}).get("sintesis", "") or "")[:500] if isinstance(weekly_report_data.get("resumen_ejecutivo"), dict) else str(weekly_report_data.get("resumen_ejecutivo", ""))[:500],
                     generationTime=generation_time,
-                    itemCount=total_menciones if total_menciones > 0 else (len(source_links) if source_links else 0)
+                    itemCount=total_menciones if total_menciones > 0 else len(all_source_urls)
                 )
                 db.add(new_report)
                 await db.commit()
@@ -500,7 +525,7 @@ async def get_weekly_report(
                         "report_id": new_report.id,
                         "campaign_id": campaign.id,
                         "source": source_type,
-                        "sources_count": len(source_links) if source_links else 0,
+                        "sources_count": len(all_source_urls),
                         "articles_found": len(scraped_articles) if scraped_articles else 0,
                         "note": note
                     }
@@ -789,29 +814,42 @@ async def get_daily_summary(
         topic_counts = Counter(all_topics)
         top_topics = [t for t, _ in topic_counts.most_common(5)]
 
-        # Si no hay datos locales, buscar SourceLinks de la campaña y usar Apify para scraping
+        # Si no hay datos locales, buscar fuentes de la campaña y usar Apify para scraping
         if total_menciones == 0:
-            print(f"⚠️ No hay datos locales para '{q}', buscando SourceLinks...")
+            print(f"⚠️ No hay datos locales para '{q}', buscando fuentes configuradas...")
 
             # Obtener las fuentes (URLs) configuradas para esta campaña
+            # 1. Primero buscar en SourceLink (tabla source_links)
             source_links_query = select(SourceLink).where(SourceLink.campaignId == campaign.id)
             source_links_result = await db.execute(source_links_query)
             source_links = source_links_result.scalars().all()
 
-            print(f"📎 SourceLinks encontrados: {len(source_links)}")
+            # 2. También buscar en MonitoringSource (tabla monitoring_sources - usada por el frontend)
+            monitoring_sources_query = select(MonitoringSource).where(MonitoringSource.campaignId == campaign.id)
+            monitoring_sources_result = await db.execute(monitoring_sources_query)
+            monitoring_sources = monitoring_sources_result.scalars().all()
+
+            # Combinar ambas fuentes en una lista unificada
+            all_source_urls = []
+            for sl in source_links:
+                all_source_urls.append({"url": sl.url, "source": "source_links"})
+            for ms in monitoring_sources:
+                all_source_urls.append({"url": ms.url, "source": "monitoring_sources"})
+
+            print(f"📎 Fuentes encontradas: {len(source_links)} SourceLinks + {len(monitoring_sources)} MonitoringSources = {len(all_source_urls)} total")
 
             actor_name = campaign.query or campaign.name or q
             scraped_articles = []
 
-            if source_links and APIFY_AVAILABLE:
-                # Usar Apify para hacer scraping de cada SourceLink
-                print(f"🔗 Usando Apify para scraping diario de {len(source_links)} fuentes...")
+            if all_source_urls and APIFY_AVAILABLE:
+                # Usar Apify para hacer scraping de cada fuente
+                print(f"🔗 Usando Apify para scraping diario de {len(all_source_urls)} fuentes...")
 
-                for sl in source_links:
+                for src in all_source_urls:
                     try:
-                        print(f"📰 Scraping: {sl.url}")
+                        print(f"📰 Scraping: {src['url']} (de {src['source']})")
                         articles = await scrape_news_site(
-                            site_url=sl.url,
+                            site_url=src['url'],
                             candidate_name=actor_name,
                             max_posts=10,
                             days_back=1  # Solo últimas 24 horas para reporte diario
@@ -822,7 +860,7 @@ async def get_daily_summary(
                         else:
                             print(f"   ⚠️ No se encontraron artículos relevantes")
                     except Exception as e:
-                        print(f"   ❌ Error en scraping de {sl.url}: {e}")
+                        print(f"   ❌ Error en scraping de {src['url']}: {e}")
                         continue
 
                 print(f"📊 Total artículos scrapeados: {len(scraped_articles)}")
@@ -849,7 +887,7 @@ async def get_daily_summary(
 
                     total_menciones = len(scraped_articles)
                     source_type = "apify_scraping"
-                    note = f"Scraping con Apify de {len(source_links)} fuentes: {len(scraped_articles)} artículos"
+                    note = f"Scraping con Apify de {len(all_source_urls)} fuentes: {len(scraped_articles)} artículos"
 
                     # Enviar contenido scrapeado a Perplexity para análisis
                     print(f"🤖 Enviando {len(contenido_para_analisis)} artículos a Perplexity...")
@@ -859,7 +897,7 @@ async def get_daily_summary(
                             data=contenido_para_analisis[:20],
                             metricas={
                                 "total": total_menciones,
-                                "fuentes_scrapeadas": len(source_links),
+                                "fuentes_scrapeadas": len(all_source_urls),
                                 "articulos_encontrados": len(scraped_articles),
                             }
                         )
@@ -879,7 +917,7 @@ async def get_daily_summary(
                         "registro_de_evidencia": registro_evidencia[:30],
                         "metricas": {
                             "total_menciones": total_menciones,
-                            "fuentes_analizadas": len(source_links),
+                            "fuentes_analizadas": len(all_source_urls),
                             "articulos_encontrados": len(scraped_articles),
                         },
                         "periodo": {
@@ -894,15 +932,15 @@ async def get_daily_summary(
                     source_type = "perplexity_fallback"
                     note = f"Apify no encontró menciones de '{actor_name}' en las fuentes. Se usó búsqueda web."
 
-            elif source_links and not APIFY_AVAILABLE:
+            elif all_source_urls and not APIFY_AVAILABLE:
                 # Apify no está disponible, usar Perplexity directamente
                 print(f"⚠️ Apify no disponible, usando Perplexity búsqueda web")
                 daily_data = await perplexity_service.get_daily_actor_summary(actor_name=actor_name)
                 source_type = "perplexity_no_apify"
                 note = "Apify no está configurado. Se usó búsqueda web de Perplexity."
             else:
-                # Si no hay SourceLinks, usar búsqueda web general
-                print(f"⚠️ No hay SourceLinks, usando Perplexity búsqueda web")
+                # Si no hay fuentes configuradas, usar búsqueda web general
+                print(f"⚠️ No hay fuentes configuradas, usando Perplexity búsqueda web")
                 daily_data = await perplexity_service.get_daily_actor_summary(actor_name=actor_name)
                 source_type = "perplexity_web_search"
                 note = "No hay datos de monitoreo local ni fuentes configuradas, se usó búsqueda web"
@@ -916,7 +954,7 @@ async def get_daily_summary(
                     reportData=daily_data,
                     summary=str(daily_data.get("resumen_diario_express", ""))[:500],
                     generationTime=generation_time,
-                    itemCount=total_menciones if total_menciones > 0 else (len(source_links) if source_links else 0)
+                    itemCount=total_menciones if total_menciones > 0 else len(all_source_urls)
                 )
                 db.add(new_report)
                 await db.commit()
@@ -930,7 +968,7 @@ async def get_daily_summary(
                         "report_id": new_report.id,
                         "campaign_id": campaign.id,
                         "source": source_type,
-                        "sources_count": len(source_links) if source_links else 0,
+                        "sources_count": len(all_source_urls),
                         "articles_found": len(scraped_articles) if scraped_articles else 0,
                         "note": note
                     }
