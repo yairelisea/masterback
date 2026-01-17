@@ -139,6 +139,16 @@ async def on_startup():
             'CREATE INDEX IF NOT EXISTS ix_actor_reports_createdat ON actor_reports ("createdAt")'
         )
 
+        # Agregar valor 'news_site' al enum socialplatform si no existe
+        # PostgreSQL requiere ALTER TYPE para agregar valores a un enum existente
+        try:
+            await conn.exec_driver_sql(
+                "ALTER TYPE socialplatform ADD VALUE IF NOT EXISTS 'news_site'"
+            )
+        except Exception:
+            # Ignorar si el valor ya existe o el enum no existe aún
+            pass
+
     # Inicia jobs programados (alertas y campañas autoEnabled)
     try:
         await start_scheduler()
