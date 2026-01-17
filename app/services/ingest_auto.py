@@ -84,8 +84,8 @@ async def kickoff_campaign_ingest(
                         tone=item_data.get("sentiment_label", "Neutral"),
                         topics=item_data.get("topics", []),
                         summary=item_data.get("summary", ""),
-                        # Metadatos adicionales
-                        metadata={
+                        # Metadatos adicionales (analysis_metadata porque "metadata" es reservado en SQLAlchemy)
+                        analysis_metadata={
                             "key_points": item_data.get("key_points", []),
                             "relevance_score": item_data.get("relevance_score", 0.0),
                             "es_medio_local": item_data.get("es_medio_local", False)

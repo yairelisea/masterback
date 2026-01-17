@@ -160,7 +160,8 @@ class Analysis(Base):
     stance: Mapped[str | None] = mapped_column(String(50))
     perception: Mapped[dict | None] = mapped_column(JSON)
     # Metadata adicional del análisis (source, scoring, etc.)
-    metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Nota: "metadata" es reservado en SQLAlchemy, usamos "analysis_metadata"
+    analysis_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
