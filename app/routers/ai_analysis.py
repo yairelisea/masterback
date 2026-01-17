@@ -149,18 +149,27 @@ async def get_weekly_report(
         # 2. Generar nuevo reporte
         print(f"🔄 Generando nuevo reporte semanal para '{q}'")
         start_time = time.time()
-        
+
         weekly_report_data = await perplexity_service.get_weekly_actor_report(
             actor_name=q
         )
-        
+
+        # Validar que sea un diccionario
+        if not isinstance(weekly_report_data, dict):
+            raise HTTPException(status_code=500, detail="Respuesta inválida del servicio de análisis")
+
         if weekly_report_data.get("error"):
             raise HTTPException(status_code=500, detail=weekly_report_data.get("error"))
-        
+
         generation_time = time.time() - start_time
-        
+
         # 3. Extraer resumen y contar items
-        summary = weekly_report_data.get("resumen_ejecutivo", {}).get("sintesis", "")
+        # resumen_ejecutivo puede ser string o dict, manejamos ambos casos
+        resumen = weekly_report_data.get("resumen_ejecutivo", "")
+        if isinstance(resumen, dict):
+            summary = resumen.get("sintesis", "") or resumen.get("texto", "") or str(resumen)
+        else:
+            summary = str(resumen) if resumen else ""
         item_count = len(weekly_report_data.get("log_de_evidencia", []))
         
         # 4. Guardar en BD
@@ -243,18 +252,23 @@ async def get_daily_summary(
         # 2. Generar nuevo resumen
         print(f"🔄 Generando nuevo resumen diario para '{q}'")
         start_time = time.time()
-        
+
         daily_summary_data = await perplexity_service.get_daily_actor_summary(
             actor_name=q
         )
-        
+
+        # Validar que sea un diccionario
+        if not isinstance(daily_summary_data, dict):
+            raise HTTPException(status_code=500, detail="Respuesta inválida del servicio de análisis")
+
         if daily_summary_data.get("error"):
             raise HTTPException(status_code=500, detail=daily_summary_data.get("error"))
-        
+
         generation_time = time.time() - start_time
-        
+
         # 3. Extraer resumen y contar items
-        summary = daily_summary_data.get("resumen_diario_express", "")
+        resumen = daily_summary_data.get("resumen_diario_express", "")
+        summary = str(resumen) if resumen else ""
         item_count = len(daily_summary_data.get("registro_de_evidencia", []))
         
         # 4. Guardar en BD

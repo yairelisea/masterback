@@ -123,6 +123,17 @@ async def on_startup():
             'ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS search_variants JSONB'
         )
 
+        # Índices para actor_reports (reportes históricos)
+        await conn.exec_driver_sql(
+            'CREATE INDEX IF NOT EXISTS ix_actor_reports_actorname ON actor_reports ("actorName")'
+        )
+        await conn.exec_driver_sql(
+            'CREATE INDEX IF NOT EXISTS ix_actor_reports_reporttype ON actor_reports ("reportType")'
+        )
+        await conn.exec_driver_sql(
+            'CREATE INDEX IF NOT EXISTS ix_actor_reports_createdat ON actor_reports ("createdAt")'
+        )
+
     # Inicia jobs programados (alertas y campañas autoEnabled)
     try:
         await start_scheduler()
