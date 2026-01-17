@@ -13,11 +13,12 @@ import time
 # Importar el servicio de Perplexity (para analyze-news legacy)
 from ..services.perplexity_service import perplexity_service
 from ..services.query_builder import build_basic_query
+from ..services.apify_service import scrape_news_site, APIFY_AVAILABLE
 from ..db import get_session
 from .. import models
 from ..models import (
     ActorReport, ReportType, Campaign, AnalyticResult,
-    IngestedItem, Analysis, MonitoringSource
+    IngestedItem, Analysis, MonitoringSource, SourceLink
 )
 
 # Definir el router
@@ -312,12 +313,127 @@ async def get_weekly_report(
         topic_counts = Counter(all_topics)
         top_topics = [{"tema": t, "menciones": c} for t, c in topic_counts.most_common(10)]
 
-        # Si no hay datos locales, usar Perplexity directo como fallback
+        # Si no hay datos locales, buscar SourceLinks de la campaña y usar Apify para scraping
         if total_menciones == 0:
-            print(f"⚠️ No hay datos locales para '{q}', usando Perplexity directo")
-            weekly_report_data = await perplexity_service.get_weekly_actor_report(actor_name=campaign.query or campaign.name or q)
+            print(f"⚠️ No hay datos locales para '{q}', buscando SourceLinks...")
+
+            # Obtener las fuentes (URLs) configuradas para esta campaña
+            source_links_query = select(SourceLink).where(SourceLink.campaignId == campaign.id)
+            source_links_result = await db.execute(source_links_query)
+            source_links = source_links_result.scalars().all()
+
+            print(f"📎 SourceLinks encontrados: {len(source_links)}")
+
+            actor_name = campaign.query or campaign.name or q
+            scraped_articles = []
+
+            if source_links and APIFY_AVAILABLE:
+                # Usar Apify para hacer scraping de cada SourceLink
+                print(f"🔗 Usando Apify para scraping de {len(source_links)} fuentes...")
+
+                for sl in source_links:
+                    try:
+                        print(f"📰 Scraping: {sl.url}")
+                        articles = await scrape_news_site(
+                            site_url=sl.url,
+                            candidate_name=actor_name,
+                            max_posts=20,
+                            days_back=7
+                        )
+                        if articles:
+                            scraped_articles.extend(articles)
+                            print(f"   ✅ {len(articles)} artículos encontrados mencionando a '{actor_name}'")
+                        else:
+                            print(f"   ⚠️ No se encontraron artículos relevantes")
+                    except Exception as e:
+                        print(f"   ❌ Error en scraping de {sl.url}: {e}")
+                        continue
+
+                print(f"📊 Total artículos scrapeados: {len(scraped_articles)}")
+
+                if scraped_articles:
+                    # Convertir artículos scrapeados a formato de evidencia
+                    for art in scraped_articles:
+                        log_evidencia.append({
+                            "descripcion": art.get("title") or art.get("content", "")[:200],
+                            "fecha": art.get("date") or now.strftime("%Y-%m-%d"),
+                            "tipo_medio": f"Noticias - {art.get('source_name', 'Fuente configurada')}",
+                            "link": art.get("url", ""),
+                            "titulo": art.get("title"),
+                            "sentimiento": None,  # Se analizará con Perplexity
+                            "fuente": art.get("source_name"),
+                            "region": art.get("source_region"),
+                        })
+                        contenido_para_analisis.append({
+                            "tipo": "noticia_scrapeada",
+                            "titulo": art.get("title"),
+                            "url": art.get("url"),
+                            "contenido": art.get("content", "")[:500],
+                            "fuente": art.get("source_name"),
+                        })
+
+                    total_menciones = len(scraped_articles)
+                    source_type = "apify_scraping"
+                    note = f"Scraping con Apify de {len(source_links)} fuentes: {len(scraped_articles)} artículos"
+
+                    # Enviar contenido scrapeado a Perplexity para análisis
+                    print(f"🤖 Enviando {len(contenido_para_analisis)} artículos scrapeados a Perplexity...")
+                    try:
+                        analisis_ia = await perplexity_service.analyze_collected_data(
+                            actor_name=actor_name,
+                            data=contenido_para_analisis[:30],
+                            metricas={
+                                "total": total_menciones,
+                                "fuentes_scrapeadas": len(source_links),
+                                "articulos_encontrados": len(scraped_articles),
+                            }
+                        )
+                    except Exception as e:
+                        print(f"⚠️ Error en Perplexity: {e}")
+                        analisis_ia = {
+                            "resumen_ejecutivo": f"Se encontraron {len(scraped_articles)} artículos sobre {actor_name} en las fuentes configuradas.",
+                            "analisis_estrategico": "Análisis pendiente.",
+                            "recomendaciones": []
+                        }
+
+                    # Construir reporte con datos scrapeados
+                    weekly_report_data = {
+                        "resumen_ejecutivo": analisis_ia.get("resumen_ejecutivo", f"Análisis semanal de {actor_name}"),
+                        "analisis_estrategico": analisis_ia.get("analisis_estrategico", ""),
+                        "recomendaciones": analisis_ia.get("recomendaciones", []),
+                        "log_de_evidencia": log_evidencia[:50],
+                        "metricas": {
+                            "total_menciones": total_menciones,
+                            "fuentes_analizadas": len(source_links),
+                            "articulos_encontrados": len(scraped_articles),
+                        },
+                        "periodo": {
+                            "inicio": week_ago.strftime("%Y-%m-%d"),
+                            "fin": now.strftime("%Y-%m-%d"),
+                        }
+                    }
+                else:
+                    # Apify no encontró artículos relevantes, usar Perplexity como fallback
+                    print(f"⚠️ Apify no encontró artículos, usando Perplexity búsqueda web")
+                    weekly_report_data = await perplexity_service.get_weekly_actor_report(actor_name=actor_name)
+                    source_type = "perplexity_fallback"
+                    note = f"Apify no encontró menciones de '{actor_name}' en las fuentes. Se usó búsqueda web."
+
+            elif source_links and not APIFY_AVAILABLE:
+                # Apify no está disponible, usar Perplexity directamente
+                print(f"⚠️ Apify no disponible, usando Perplexity búsqueda web")
+                weekly_report_data = await perplexity_service.get_weekly_actor_report(actor_name=actor_name)
+                source_type = "perplexity_no_apify"
+                note = "Apify no está configurado. Se usó búsqueda web de Perplexity."
+            else:
+                # Si no hay SourceLinks, usar búsqueda web general
+                print(f"⚠️ No hay SourceLinks, usando Perplexity búsqueda web")
+                weekly_report_data = await perplexity_service.get_weekly_actor_report(actor_name=actor_name)
+                source_type = "perplexity_web_search"
+                note = "No hay datos de monitoreo local ni fuentes configuradas, se usó búsqueda web"
+
             if isinstance(weekly_report_data, dict):
-                # Guardar en BD aunque sea de Perplexity
+                # Guardar en BD
                 generation_time = time.time() - start_time
                 new_report = ActorReport(
                     actorName=q,
@@ -325,7 +441,7 @@ async def get_weekly_report(
                     reportData=weekly_report_data,
                     summary=(weekly_report_data.get("resumen_ejecutivo", {}).get("sintesis", "") or "")[:500] if isinstance(weekly_report_data.get("resumen_ejecutivo"), dict) else str(weekly_report_data.get("resumen_ejecutivo", ""))[:500],
                     generationTime=generation_time,
-                    itemCount=0
+                    itemCount=total_menciones if total_menciones > 0 else (len(source_links) if source_links else 0)
                 )
                 db.add(new_report)
                 await db.commit()
@@ -338,8 +454,10 @@ async def get_weekly_report(
                         "generated_at": new_report.createdAt.isoformat(),
                         "report_id": new_report.id,
                         "campaign_id": campaign.id,
-                        "source": "perplexity_web_search",
-                        "note": "No hay datos de monitoreo local, se usó búsqueda web"
+                        "source": source_type,
+                        "sources_count": len(source_links) if source_links else 0,
+                        "articles_found": len(scraped_articles) if scraped_articles else 0,
+                        "note": note
                     }
                 }
             return {"error": "No se pudo generar el reporte"}
@@ -626,12 +744,126 @@ async def get_daily_summary(
         topic_counts = Counter(all_topics)
         top_topics = [t for t, _ in topic_counts.most_common(5)]
 
-        # Si no hay datos locales, usar Perplexity directo como fallback
+        # Si no hay datos locales, buscar SourceLinks de la campaña y usar Apify para scraping
         if total_menciones == 0:
-            print(f"⚠️ No hay datos locales para '{q}', usando Perplexity directo")
-            daily_data = await perplexity_service.get_daily_actor_summary(actor_name=campaign.query or campaign.name or q)
+            print(f"⚠️ No hay datos locales para '{q}', buscando SourceLinks...")
+
+            # Obtener las fuentes (URLs) configuradas para esta campaña
+            source_links_query = select(SourceLink).where(SourceLink.campaignId == campaign.id)
+            source_links_result = await db.execute(source_links_query)
+            source_links = source_links_result.scalars().all()
+
+            print(f"📎 SourceLinks encontrados: {len(source_links)}")
+
+            actor_name = campaign.query or campaign.name or q
+            scraped_articles = []
+
+            if source_links and APIFY_AVAILABLE:
+                # Usar Apify para hacer scraping de cada SourceLink
+                print(f"🔗 Usando Apify para scraping diario de {len(source_links)} fuentes...")
+
+                for sl in source_links:
+                    try:
+                        print(f"📰 Scraping: {sl.url}")
+                        articles = await scrape_news_site(
+                            site_url=sl.url,
+                            candidate_name=actor_name,
+                            max_posts=10,
+                            days_back=1  # Solo últimas 24 horas para reporte diario
+                        )
+                        if articles:
+                            scraped_articles.extend(articles)
+                            print(f"   ✅ {len(articles)} artículos encontrados")
+                        else:
+                            print(f"   ⚠️ No se encontraron artículos relevantes")
+                    except Exception as e:
+                        print(f"   ❌ Error en scraping de {sl.url}: {e}")
+                        continue
+
+                print(f"📊 Total artículos scrapeados: {len(scraped_articles)}")
+
+                if scraped_articles:
+                    # Convertir artículos scrapeados a formato de evidencia
+                    for art in scraped_articles:
+                        registro_evidencia.append({
+                            "descripcion": art.get("title") or art.get("content", "")[:200],
+                            "fecha": art.get("date") or now.strftime("%Y-%m-%d"),
+                            "tipo_medio": f"Noticias - {art.get('source_name', 'Fuente configurada')}",
+                            "link": art.get("url", ""),
+                            "titulo": art.get("title"),
+                            "sentimiento": None,
+                            "fuente": art.get("source_name"),
+                        })
+                        contenido_para_analisis.append({
+                            "tipo": "noticia_scrapeada",
+                            "titulo": art.get("title"),
+                            "url": art.get("url"),
+                            "contenido": art.get("content", "")[:300],
+                            "fuente": art.get("source_name"),
+                        })
+
+                    total_menciones = len(scraped_articles)
+                    source_type = "apify_scraping"
+                    note = f"Scraping con Apify de {len(source_links)} fuentes: {len(scraped_articles)} artículos"
+
+                    # Enviar contenido scrapeado a Perplexity para análisis
+                    print(f"🤖 Enviando {len(contenido_para_analisis)} artículos a Perplexity...")
+                    try:
+                        analisis_ia = await perplexity_service.analyze_collected_data(
+                            actor_name=actor_name,
+                            data=contenido_para_analisis[:20],
+                            metricas={
+                                "total": total_menciones,
+                                "fuentes_scrapeadas": len(source_links),
+                                "articulos_encontrados": len(scraped_articles),
+                            }
+                        )
+                    except Exception as e:
+                        print(f"⚠️ Error en Perplexity: {e}")
+                        analisis_ia = {
+                            "resumen_ejecutivo": f"Se encontraron {len(scraped_articles)} artículos sobre {actor_name} hoy.",
+                            "analisis_estrategico": "Análisis pendiente.",
+                            "recomendaciones": []
+                        }
+
+                    # Construir reporte diario con datos scrapeados
+                    daily_data = {
+                        "resumen_diario_express": analisis_ia.get("resumen_ejecutivo", f"Resumen diario de {actor_name}"),
+                        "analisis_del_dia": analisis_ia.get("analisis_estrategico", ""),
+                        "recomendaciones": analisis_ia.get("recomendaciones", []),
+                        "registro_de_evidencia": registro_evidencia[:30],
+                        "metricas": {
+                            "total_menciones": total_menciones,
+                            "fuentes_analizadas": len(source_links),
+                            "articulos_encontrados": len(scraped_articles),
+                        },
+                        "periodo": {
+                            "inicio": yesterday.strftime("%Y-%m-%d %H:%M"),
+                            "fin": now.strftime("%Y-%m-%d %H:%M"),
+                        }
+                    }
+                else:
+                    # Apify no encontró artículos relevantes, usar Perplexity como fallback
+                    print(f"⚠️ Apify no encontró artículos, usando Perplexity búsqueda web")
+                    daily_data = await perplexity_service.get_daily_actor_summary(actor_name=actor_name)
+                    source_type = "perplexity_fallback"
+                    note = f"Apify no encontró menciones de '{actor_name}' en las fuentes. Se usó búsqueda web."
+
+            elif source_links and not APIFY_AVAILABLE:
+                # Apify no está disponible, usar Perplexity directamente
+                print(f"⚠️ Apify no disponible, usando Perplexity búsqueda web")
+                daily_data = await perplexity_service.get_daily_actor_summary(actor_name=actor_name)
+                source_type = "perplexity_no_apify"
+                note = "Apify no está configurado. Se usó búsqueda web de Perplexity."
+            else:
+                # Si no hay SourceLinks, usar búsqueda web general
+                print(f"⚠️ No hay SourceLinks, usando Perplexity búsqueda web")
+                daily_data = await perplexity_service.get_daily_actor_summary(actor_name=actor_name)
+                source_type = "perplexity_web_search"
+                note = "No hay datos de monitoreo local ni fuentes configuradas, se usó búsqueda web"
+
             if isinstance(daily_data, dict):
-                # Guardar en BD aunque sea de Perplexity
+                # Guardar en BD
                 generation_time = time.time() - start_time
                 new_report = ActorReport(
                     actorName=q,
@@ -639,7 +871,7 @@ async def get_daily_summary(
                     reportData=daily_data,
                     summary=str(daily_data.get("resumen_diario_express", ""))[:500],
                     generationTime=generation_time,
-                    itemCount=0
+                    itemCount=total_menciones if total_menciones > 0 else (len(source_links) if source_links else 0)
                 )
                 db.add(new_report)
                 await db.commit()
@@ -652,8 +884,10 @@ async def get_daily_summary(
                         "generated_at": new_report.createdAt.isoformat(),
                         "report_id": new_report.id,
                         "campaign_id": campaign.id,
-                        "source": "perplexity_web_search",
-                        "note": "No hay datos de monitoreo local, se usó búsqueda web"
+                        "source": source_type,
+                        "sources_count": len(source_links) if source_links else 0,
+                        "articles_found": len(scraped_articles) if scraped_articles else 0,
+                        "note": note
                     }
                 }
             return {"error": "No se pudo generar el resumen"}

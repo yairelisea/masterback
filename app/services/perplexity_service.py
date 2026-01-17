@@ -638,8 +638,12 @@ FORMATO REQUERIDO - Responde SOLO esto:
             }
 
     async def get_weekly_actor_report(self, actor_name: str) -> Dict[str, Any]:
-        """Reporte semanal con énfasis en medios locales de múltiples estados."""
-        print(f"\n📊 Generando reporte semanal para: {actor_name}")
+        """
+        Reporte semanal con énfasis en medios locales de múltiples estados.
+        Este método usa búsqueda web de Perplexity como fallback cuando no hay
+        SourceLinks configurados o cuando Apify no encuentra artículos.
+        """
+        print(f"\n📊 Generando reporte semanal (Perplexity web search) para: {actor_name}")
 
         analysis_prompt = f"""
 Análisis semanal integral de "{actor_name}", priorizando medios locales de:
