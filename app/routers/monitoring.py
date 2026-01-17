@@ -24,7 +24,7 @@ from app.models import (
     MonitoringStatus,
     RiskLevel,
 )
-from app.middleware import get_current_user
+from app.deps import get_current_user
 from app.services.social_analysis_service import (
     run_campaign_monitoring_pipeline,
     get_campaign_analysis_summary,

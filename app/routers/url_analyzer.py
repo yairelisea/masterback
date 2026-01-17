@@ -36,7 +36,7 @@ from app.schemas import (
     PostMeta,
     PostResult,
 )
-from app.middleware import get_current_user
+from app.deps import get_current_user
 
 router = APIRouter(prefix="/url-analyzer", tags=["url-analyzer"])
 
