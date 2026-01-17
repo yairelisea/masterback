@@ -17,7 +17,14 @@ from fastapi import APIRouter, HTTPException, Depends, Response, Body
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from weasyprint import HTML
+
+# WeasyPrint es opcional (requiere librerías del sistema)
+try:
+    from weasyprint import HTML
+    WEASYPRINT_AVAILABLE = True
+except (ImportError, OSError):
+    HTML = None
+    WEASYPRINT_AVAILABLE = False
 
 from app.db import get_session
 from app.models import Campaign, IngestedItem

@@ -9,7 +9,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, HttpUrl, Field
-from weasyprint import HTML
+
+# WeasyPrint es opcional (requiere librerías del sistema)
+try:
+    from weasyprint import HTML
+    WEASYPRINT_AVAILABLE = True
+except (ImportError, OSError):
+    HTML = None
+    WEASYPRINT_AVAILABLE = False
 
 # 🔌 Nuestros servicios nuevos
 # - services.perplexity.analyze_text: analiza texto y devuelve JSON (sentiment/topics/summary + extras)
