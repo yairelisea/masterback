@@ -78,6 +78,7 @@ class Campaign(Base):
 
     sources = relationship("SourceLink", back_populates="campaign")
     analyses = relationship("Analysis", back_populates="campaign")
+    monitoring_sources = relationship("MonitoringSource", back_populates="campaign")
 
 
 # ------------------------
@@ -410,7 +411,7 @@ class MonitoringSource(Base):
     )
 
     # Relaciones
-    campaign = relationship("Campaign", backref="monitoring_sources")
+    campaign = relationship("Campaign", back_populates="monitoring_sources")
     analytic_results = relationship("AnalyticResult", back_populates="source", cascade="all, delete-orphan")
 
 
