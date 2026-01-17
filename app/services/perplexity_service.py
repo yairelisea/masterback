@@ -256,7 +256,7 @@ Artículo:
 """
 
             chat_response = await self.client.chat.completions.create(
-                model="sonar-reasoning",
+                model="sonar-pro",
                 messages=[
                     {"role": "system", "content": "Eres un analista de medios. Respondes SOLO con JSON válido."},
                     {"role": "user", "content": analysis_prompt},
@@ -540,7 +540,7 @@ FORMATO REQUERIDO - Responde SOLO esto:
 
         try:
             chat_response = await self.client.chat.completions.create(
-                model="sonar-reasoning",
+                model="sonar-pro",
                 messages=[
                     {"role": "system", "content": "Analista de medios. Respondes SOLO con JSON válido. NUNCA incluyas texto antes o después del JSON."},
                     {"role": "user", "content": analysis_prompt},
@@ -666,7 +666,7 @@ Responde SOLO con JSON válido (sin texto antes o después):
 
         try:
             chat_response = await self.client.chat.completions.create(
-                model="sonar-reasoning",
+                model="sonar-pro",
                 messages=[
                     {"role": "system", "content": "Analista político. Respondes SOLO con JSON válido. NUNCA incluyas texto antes o después del JSON."},
                     {"role": "user", "content": analysis_prompt},
@@ -820,7 +820,7 @@ Responde SOLO con JSON válido (sin texto antes o después):
 
         try:
             chat_response = await self.client.chat.completions.create(
-                model="sonar-reasoning",
+                model="sonar-pro",
                 messages=[
                     {
                         "role": "system",
