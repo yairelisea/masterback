@@ -302,6 +302,38 @@ async def get_weekly_report(
         topic_counts = Counter(all_topics)
         top_topics = [{"tema": t, "menciones": c} for t, c in topic_counts.most_common(10)]
 
+        # Si no hay datos locales, usar Perplexity directo como fallback
+        if total_menciones == 0:
+            print(f"⚠️ No hay datos locales para '{q}', usando Perplexity directo")
+            weekly_report_data = await perplexity_service.get_weekly_actor_report(actor_name=campaign.query or campaign.name or q)
+            if isinstance(weekly_report_data, dict):
+                # Guardar en BD aunque sea de Perplexity
+                generation_time = time.time() - start_time
+                new_report = ActorReport(
+                    actorName=q,
+                    reportType=ReportType.WEEKLY,
+                    reportData=weekly_report_data,
+                    summary=(weekly_report_data.get("resumen_ejecutivo", {}).get("sintesis", "") or "")[:500] if isinstance(weekly_report_data.get("resumen_ejecutivo"), dict) else str(weekly_report_data.get("resumen_ejecutivo", ""))[:500],
+                    generationTime=generation_time,
+                    itemCount=0
+                )
+                db.add(new_report)
+                await db.commit()
+                await db.refresh(new_report)
+
+                return {
+                    **weekly_report_data,
+                    "_metadata": {
+                        "from_cache": False,
+                        "generated_at": new_report.createdAt.isoformat(),
+                        "report_id": new_report.id,
+                        "campaign_id": campaign.id,
+                        "source": "perplexity_web_search",
+                        "note": "No hay datos de monitoreo local, se usó búsqueda web"
+                    }
+                }
+            return {"error": "No se pudo generar el reporte"}
+
         max_sentiment = max(sentiment_counts, key=sentiment_counts.get) if total_menciones > 0 else "neutral"
         sentiment_pct = {
             k: round((v / total_menciones) * 100, 1) if total_menciones > 0 else 0
@@ -583,6 +615,38 @@ async def get_daily_summary(
         total_menciones = len(social_posts) + len(news_items)
         topic_counts = Counter(all_topics)
         top_topics = [t for t, _ in topic_counts.most_common(5)]
+
+        # Si no hay datos locales, usar Perplexity directo como fallback
+        if total_menciones == 0:
+            print(f"⚠️ No hay datos locales para '{q}', usando Perplexity directo")
+            daily_data = await perplexity_service.get_daily_actor_summary(actor_name=campaign.query or campaign.name or q)
+            if isinstance(daily_data, dict):
+                # Guardar en BD aunque sea de Perplexity
+                generation_time = time.time() - start_time
+                new_report = ActorReport(
+                    actorName=q,
+                    reportType=ReportType.DAILY,
+                    reportData=daily_data,
+                    summary=str(daily_data.get("resumen_diario_express", ""))[:500],
+                    generationTime=generation_time,
+                    itemCount=0
+                )
+                db.add(new_report)
+                await db.commit()
+                await db.refresh(new_report)
+
+                return {
+                    **daily_data,
+                    "_metadata": {
+                        "from_cache": False,
+                        "generated_at": new_report.createdAt.isoformat(),
+                        "report_id": new_report.id,
+                        "campaign_id": campaign.id,
+                        "source": "perplexity_web_search",
+                        "note": "No hay datos de monitoreo local, se usó búsqueda web"
+                    }
+                }
+            return {"error": "No se pudo generar el resumen"}
 
         max_sentiment = max(sentiment_counts, key=sentiment_counts.get) if total_menciones > 0 else "neutral"
 
