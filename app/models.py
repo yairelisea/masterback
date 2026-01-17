@@ -328,12 +328,14 @@ class ActorReport(Base):
 # MonitoringSource - Fuentes de redes sociales para monitoreo con Apify
 # ------------------------
 class SocialPlatform(str, enum.Enum):
-    """Plataformas de redes sociales soportadas"""
+    """Plataformas de redes sociales y medios soportados"""
     FACEBOOK = "facebook"
     TWITTER = "twitter"
     INSTAGRAM = "instagram"
     TIKTOK = "tiktok"
     YOUTUBE = "youtube"
+    # Medios de noticias locales
+    NEWS_SITE = "news_site"  # Sitios de noticias genéricos (El Sol, La Razón, etc.)
 
 
 class MonitoringStatus(str, enum.Enum):

@@ -46,6 +46,20 @@ class CampaignCreate(BaseModel):
         populate_by_name = True  # acepta days_back o daysBack
 
 
+class MonitoringSourceBrief(BaseModel):
+    """Versión resumida de MonitoringSource para incluir en CampaignOut"""
+    id: str
+    url: str
+    platform: str
+    name: Optional[str] = None
+    status: str
+    lastRunAt: Optional[datetime] = None
+    totalPostsCollected: int = 0
+
+    class Config:
+        from_attributes = True
+
+
 class CampaignOut(BaseModel):
     id: str
     name: str
@@ -60,6 +74,9 @@ class CampaignOut(BaseModel):
     userId: Optional[str] = None
     createdAt: Optional[datetime] = None
     news_analysis: Optional[Dict[str, Any]] = None
+    # Fuentes de monitoreo de redes sociales asociadas
+    monitoring_sources: Optional[List[MonitoringSourceBrief]] = None
+    monitoring_sources_count: int = 0
 
     class Config:
         from_attributes = True

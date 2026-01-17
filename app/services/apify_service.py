@@ -32,6 +32,32 @@ APIFY_ACTORS = {
     "instagram": "apify/instagram-scraper",
     "tiktok": "clockworks/tiktok-scraper",
     "youtube": "bernardo/youtube-scraper",
+    # Scraper genérico para sitios de noticias
+    "news_site": "apify/website-content-crawler",
+}
+
+# Medios de noticias locales conocidos (para configuración específica)
+KNOWN_NEWS_SITES = {
+    "elsoldetampico.com.mx": {"name": "El Sol de Tampico", "region": "Tamaulipas"},
+    "larazon.es": {"name": "La Razón", "region": "Nacional"},
+    "larazon.com.mx": {"name": "La Razón MX", "region": "Nacional"},
+    "milenio.com": {"name": "Milenio", "region": "Nacional"},
+    "eluniversal.com.mx": {"name": "El Universal", "region": "Nacional"},
+    "excelsior.com.mx": {"name": "Excélsior", "region": "Nacional"},
+    "reforma.com": {"name": "Reforma", "region": "Nacional"},
+    "jornada.com.mx": {"name": "La Jornada", "region": "Nacional"},
+    "proceso.com.mx": {"name": "Proceso", "region": "Nacional"},
+    "animalpolitico.com": {"name": "Animal Político", "region": "Nacional"},
+    "elfinanciero.com.mx": {"name": "El Financiero", "region": "Nacional"},
+    "eleconomista.com.mx": {"name": "El Economista", "region": "Nacional"},
+    "elsoldemexico.com.mx": {"name": "El Sol de México", "region": "Nacional"},
+    "elsoldeleon.com.mx": {"name": "El Sol de León", "region": "Guanajuato"},
+    "elsoldepuebla.com.mx": {"name": "El Sol de Puebla", "region": "Puebla"},
+    "elsiglodetorreon.com.mx": {"name": "El Siglo de Torreón", "region": "Coahuila"},
+    "zocalo.com.mx": {"name": "Zócalo", "region": "Coahuila"},
+    "eldiariodechihuahua.mx": {"name": "El Diario de Chihuahua", "region": "Chihuahua"},
+    "noroeste.com.mx": {"name": "Noroeste", "region": "Sinaloa"},
+    "elimparcial.com": {"name": "El Imparcial", "region": "Sonora"},
 }
 
 # Límites por defecto
@@ -214,6 +240,123 @@ async def scrape_instagram_profile(
 
 
 # ============================================================================
+# SCRAPING DE SITIOS DE NOTICIAS
+# ============================================================================
+def _get_domain_from_url(url: str) -> str:
+    """Extrae el dominio de una URL"""
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    domain = parsed.netloc.lower()
+    if domain.startswith("www."):
+        domain = domain[4:]
+    return domain
+
+
+async def scrape_news_site(
+    site_url: str,
+    candidate_name: str,
+    max_posts: int = DEFAULT_MAX_POSTS,
+    days_back: int = DEFAULT_DAYS_BACK,
+) -> List[Dict[str, Any]]:
+    """
+    Extrae artículos de un sitio de noticias que mencionen al candidato.
+
+    Usa el Website Content Crawler de Apify para extraer contenido de cualquier
+    sitio de noticias (El Sol de Tampico, La Razón, Milenio, etc.)
+
+    Args:
+        site_url: URL del sitio de noticias (puede ser la página principal o una sección)
+        candidate_name: Nombre del candidato/político para filtrar artículos
+        max_posts: Número máximo de artículos a extraer
+        days_back: Días hacia atrás para buscar
+
+    Returns:
+        Lista de artículos con su contenido y metadata
+    """
+    client = get_apify_client()
+
+    # Detectar si es un medio conocido
+    domain = _get_domain_from_url(site_url)
+    site_info = KNOWN_NEWS_SITES.get(domain, {"name": domain, "region": "Desconocido"})
+
+    logger.info(f"📰 Iniciando scraping de noticias: {site_info['name']} ({site_url})")
+    logger.info(f"   Candidato: {candidate_name}, Artículos máx: {max_posts}")
+
+    # Configuración del Website Content Crawler
+    run_input = {
+        "startUrls": [{"url": site_url}],
+        "maxCrawlPages": max_posts * 2,  # Crawlear más páginas para encontrar suficientes relevantes
+        "maxCrawlDepth": 2,  # No ir muy profundo
+        "crawlerType": "cheerio",  # Más rápido que playwright
+        "includeUrlGlobs": [],  # Incluir todas las URLs
+        "excludeUrlGlobs": [
+            "**/tag/**",
+            "**/categoria/**",
+            "**/category/**",
+            "**/author/**",
+            "**/autor/**",
+            "**/page/**",
+            "**/wp-content/**",
+            "**/wp-admin/**",
+        ],
+        "maxRequestRetries": 2,
+        "maxRequestsPerMinute": 60,
+    }
+
+    try:
+        run = client.actor(APIFY_ACTORS["news_site"]).call(run_input=run_input)
+        items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+
+        # Filtrar artículos que mencionen al candidato
+        filtered_articles = []
+        candidate_lower = candidate_name.lower()
+
+        for item in items:
+            # Buscar en título y contenido
+            title = (item.get("title") or "").lower()
+            text = (item.get("text") or "").lower()
+            description = (item.get("description") or "").lower()
+
+            # Verificar si el artículo menciona al candidato
+            if (candidate_lower in title or
+                candidate_lower in text or
+                candidate_lower in description):
+                filtered_articles.append(_normalize_news_article(item, site_info))
+
+            # Limitar resultados
+            if len(filtered_articles) >= max_posts:
+                break
+
+        logger.info(f"✅ Noticias ({site_info['name']}): {len(items)} páginas, {len(filtered_articles)} artículos relevantes")
+        return filtered_articles
+
+    except Exception as e:
+        logger.error(f"❌ Error en scraping de noticias ({site_info['name']}): {e}")
+        raise
+
+
+def _normalize_news_article(item: Dict[str, Any], site_info: Dict[str, str]) -> Dict[str, Any]:
+    """Normaliza un artículo de noticias al formato estándar"""
+    return {
+        "platform": "news_site",
+        "post_id": item.get("url"),  # Usamos la URL como ID único
+        "url": item.get("url"),
+        "content": item.get("text", "")[:2000],  # Limitar contenido
+        "author": item.get("author") or site_info.get("name"),
+        "date": item.get("publishedAt") or item.get("date"),
+        "likes": None,  # Los sitios de noticias no tienen likes
+        "shares": None,
+        "comments": None,
+        "views": None,
+        "title": item.get("title"),
+        "description": item.get("description"),
+        "source_name": site_info.get("name"),
+        "source_region": site_info.get("region"),
+        "raw_data": item,
+    }
+
+
+# ============================================================================
 # FUNCIÓN PRINCIPAL DE SCRAPING
 # ============================================================================
 async def scrape_monitoring_source(
@@ -228,7 +371,7 @@ async def scrape_monitoring_source(
 
     Args:
         url: URL de la fuente a monitorear
-        platform: Plataforma (facebook, twitter, instagram, etc.)
+        platform: Plataforma (facebook, twitter, instagram, news_site, etc.)
         candidate_name: Nombre del candidato para filtrar
         max_posts: Número máximo de posts
         days_back: Días hacia atrás
@@ -242,10 +385,11 @@ async def scrape_monitoring_source(
         "facebook": scrape_facebook_page,
         "twitter": scrape_twitter_account,
         "instagram": scrape_instagram_profile,
+        "news_site": scrape_news_site,
     }
 
     if platform not in scrapers:
-        raise ValueError(f"Plataforma no soportada: {platform}")
+        raise ValueError(f"Plataforma no soportada: {platform}. Usa una de: {', '.join(scrapers.keys())}")
 
     try:
         posts = await scrapers[platform](
