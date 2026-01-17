@@ -88,12 +88,20 @@ async def list_campaigns(
     db: AsyncSession = Depends(get_session),
 ):
     # Cargar campañas con sus monitoring_sources usando selectinload
-    q = (
-        select(Campaign)
-        .options(selectinload(Campaign.monitoring_sources))
-        .where(Campaign.userId == current_user["id"])
-        .order_by(Campaign.createdAt.desc())
-    )
+    # Admins pueden ver todas las campañas
+    if current_user.get("role") == "admin":
+        q = (
+            select(Campaign)
+            .options(selectinload(Campaign.monitoring_sources))
+            .order_by(Campaign.createdAt.desc())
+        )
+    else:
+        q = (
+            select(Campaign)
+            .options(selectinload(Campaign.monitoring_sources))
+            .where(Campaign.userId == current_user["id"])
+            .order_by(Campaign.createdAt.desc())
+        )
     rows = (await db.execute(q)).scalars().all()
     return [_to_out(c, c.monitoring_sources) for c in rows]
 
@@ -143,6 +151,7 @@ async def create_campaign(
 @router.get("/{id}")
 async def get_campaign_by_id(
     id: str,
+    current_user: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ):
     try:
@@ -156,6 +165,9 @@ async def get_campaign_by_id(
         c = result.scalar_one_or_none()
         if not c:
             raise HTTPException(status_code=404, detail="Campaign not found")
+        # Verificar permisos: dueño o admin
+        if c.userId != current_user["id"] and current_user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Forbidden")
         return _to_out(c, c.monitoring_sources).model_dump()
     except HTTPException:
         raise
