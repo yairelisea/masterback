@@ -182,14 +182,21 @@ async def get_weekly_report(
         now = datetime.now(timezone.utc)
         week_ago = now - timedelta(days=7)
 
-        # 3a. Obtener datos de redes sociales (AnalyticResult)
+        # Debug: ver cuántos datos hay en total para esta campaña
+        total_social_query = select(func.count()).select_from(AnalyticResult).where(AnalyticResult.campaignId == campaign.id)
+        total_social = (await db.execute(total_social_query)).scalar()
+
+        total_news_query = select(func.count()).select_from(IngestedItem).where(IngestedItem.campaignId == campaign.id)
+        total_news = (await db.execute(total_news_query)).scalar()
+
+        print(f"📊 Total datos en BD para campaña {campaign.id}: {total_social} social, {total_news} noticias")
+
+        # 3a. Obtener datos de redes sociales (AnalyticResult) - sin filtro de fecha ni isRelevant para debug
         social_query = (
             select(AnalyticResult)
             .options(selectinload(AnalyticResult.source))
             .where(
                 AnalyticResult.campaignId == campaign.id,
-                AnalyticResult.createdAt >= week_ago,
-                AnalyticResult.isRelevant == True,
             )
             .order_by(desc(AnalyticResult.createdAt))
             .limit(100)
@@ -197,19 +204,22 @@ async def get_weekly_report(
         social_result = await db.execute(social_query)
         social_posts = social_result.scalars().all()
 
-        # 3b. Obtener datos de noticias (IngestedItem + Analysis)
+        print(f"📱 Posts de redes sociales obtenidos: {len(social_posts)}")
+
+        # 3b. Obtener datos de noticias (IngestedItem + Analysis) - sin filtro de fecha para debug
         news_query = (
             select(IngestedItem)
             .options(selectinload(IngestedItem.analysis))
             .where(
                 IngestedItem.campaignId == campaign.id,
-                IngestedItem.createdAt >= week_ago,
             )
             .order_by(desc(IngestedItem.createdAt))
             .limit(100)
         )
         news_result = await db.execute(news_query)
         news_items = news_result.scalars().all()
+
+        print(f"📰 Noticias obtenidas: {len(news_items)}")
 
         # 4. Procesar métricas locales
         sentiment_counts = {"positive": 0, "negative": 0, "neutral": 0}
