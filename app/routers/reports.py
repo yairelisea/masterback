@@ -8,16 +8,18 @@ from datetime import date, datetime, timedelta
 from collections import Counter
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi import APIRouter, HTTPException, Request, Depends, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_session
 from .. import models
+from ..models import ActorReport, ReportType
 from sqlalchemy.orm import selectinload
 from datetime import date, datetime, timedelta
 from pydantic import BaseModel, Field
+from ..deps import get_current_user
 
 # Router mounted in app.main as: app.include_router(reports.router)
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -393,4 +395,369 @@ async def digital_perception_report(
     }
 
     suggested_name = f"Reporte_Percepcion_{campaign.name}_{payload.startDate.isoformat()}_{payload.endDate.isoformat()}"
+    return await _proxy_pdf_service(pdf_payload, suggested_name)
+
+
+# ============================================================================
+# ENDPOINTS PARA REPORTES HISTÓRICOS (ActorReport)
+# ============================================================================
+
+class ReportOut(BaseModel):
+    """Schema de salida para reportes históricos"""
+    id: str
+    actorName: str
+    reportType: str
+    summary: Optional[str]
+    itemCount: Optional[int]
+    createdAt: datetime
+    reportData: Optional[Dict[str, Any]] = None  # Solo se incluye en detalle
+
+    class Config:
+        from_attributes = True
+
+
+class GenerateReportRequest(BaseModel):
+    """Request para generar un reporte on-demand"""
+    campaignId: str
+    reportType: str = Field(..., description="'daily' o 'weekly'")
+    reportDate: Optional[str] = Field(None, description="Fecha del reporte (YYYY-MM-DD). Default: ayer para daily, domingo pasado para weekly")
+
+
+@router.get("/campaigns/{campaign_id}/history", response_model=List[ReportOut])
+async def list_campaign_reports(
+    campaign_id: str,
+    report_type: Optional[str] = Query(None, description="Filtrar por tipo: 'daily' o 'weekly'"),
+    limit: int = Query(30, ge=1, le=100),
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Lista los reportes históricos de una campaña.
+
+    - **campaign_id**: ID de la campaña
+    - **report_type**: Filtrar por 'daily' o 'weekly' (opcional)
+    - **limit**: Número máximo de reportes a retornar (default: 30)
+    """
+    # Verificar que la campaña existe y pertenece al usuario
+    campaign = await db.get(models.Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if campaign.userId != current_user["id"] and current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    # Construir query
+    query = (
+        select(ActorReport)
+        .where(ActorReport.actorName == campaign.query)
+        .order_by(desc(ActorReport.createdAt))
+        .limit(limit)
+    )
+
+    # Filtrar por tipo si se especifica
+    if report_type:
+        try:
+            rt = ReportType(report_type.lower())
+            query = query.where(ActorReport.reportType == rt)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Tipo de reporte inválido. Usa 'daily' o 'weekly'"
+            )
+
+    result = await db.execute(query)
+    reports = result.scalars().all()
+
+    # Convertir a schema sin incluir reportData completo (es muy grande)
+    return [
+        ReportOut(
+            id=r.id,
+            actorName=r.actorName,
+            reportType=r.reportType.value,
+            summary=r.summary,
+            itemCount=r.itemCount,
+            createdAt=r.createdAt,
+            reportData=None,  # No incluir datos completos en listado
+        )
+        for r in reports
+    ]
+
+
+@router.get("/campaigns/{campaign_id}/history/{report_id}", response_model=ReportOut)
+async def get_campaign_report(
+    campaign_id: str,
+    report_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Obtiene el detalle completo de un reporte específico.
+
+    Incluye todos los datos del reporte (reportData).
+    """
+    # Verificar campaña
+    campaign = await db.get(models.Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if campaign.userId != current_user["id"] and current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    # Obtener reporte
+    report = await db.get(ActorReport, report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    # Verificar que el reporte pertenece a esta campaña
+    if report.actorName != campaign.query:
+        raise HTTPException(status_code=404, detail="Report not found for this campaign")
+
+    return ReportOut(
+        id=report.id,
+        actorName=report.actorName,
+        reportType=report.reportType.value,
+        summary=report.summary,
+        itemCount=report.itemCount,
+        createdAt=report.createdAt,
+        reportData=report.reportData,  # Incluir datos completos
+    )
+
+
+@router.get("/campaigns/{campaign_id}/latest")
+async def get_latest_reports(
+    campaign_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Obtiene el reporte diario y semanal más reciente de una campaña.
+
+    Útil para mostrar en el dashboard.
+    """
+    # Verificar campaña
+    campaign = await db.get(models.Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if campaign.userId != current_user["id"] and current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    # Obtener último reporte diario
+    daily_query = (
+        select(ActorReport)
+        .where(
+            ActorReport.actorName == campaign.query,
+            ActorReport.reportType == ReportType.DAILY,
+        )
+        .order_by(desc(ActorReport.createdAt))
+        .limit(1)
+    )
+    daily_result = await db.execute(daily_query)
+    latest_daily = daily_result.scalar_one_or_none()
+
+    # Obtener último reporte semanal
+    weekly_query = (
+        select(ActorReport)
+        .where(
+            ActorReport.actorName == campaign.query,
+            ActorReport.reportType == ReportType.WEEKLY,
+        )
+        .order_by(desc(ActorReport.createdAt))
+        .limit(1)
+    )
+    weekly_result = await db.execute(weekly_query)
+    latest_weekly = weekly_result.scalar_one_or_none()
+
+    return {
+        "daily": {
+            "id": latest_daily.id if latest_daily else None,
+            "summary": latest_daily.summary if latest_daily else None,
+            "createdAt": latest_daily.createdAt.isoformat() if latest_daily else None,
+            "data": latest_daily.reportData if latest_daily else None,
+        } if latest_daily else None,
+        "weekly": {
+            "id": latest_weekly.id if latest_weekly else None,
+            "summary": latest_weekly.summary if latest_weekly else None,
+            "createdAt": latest_weekly.createdAt.isoformat() if latest_weekly else None,
+            "data": latest_weekly.reportData if latest_weekly else None,
+        } if latest_weekly else None,
+    }
+
+
+@router.post("/generate")
+async def generate_report_on_demand(
+    payload: GenerateReportRequest,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Genera un reporte on-demand (diario o semanal).
+
+    Útil para regenerar reportes o generar reportes de fechas específicas.
+
+    - **campaignId**: ID de la campaña
+    - **reportType**: 'daily' o 'weekly'
+    - **reportDate**: Fecha del reporte (opcional, default: ayer/domingo pasado)
+    """
+    from ..services.campaign_report_service import (
+        generate_and_save_daily_report,
+        generate_and_save_weekly_report,
+    )
+
+    # Verificar campaña
+    campaign = await db.get(models.Campaign, payload.campaignId)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    # Solo admin o dueño puede generar reportes
+    if campaign.userId != current_user["id"] and current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    # Parsear fecha si se proporciona
+    report_date = None
+    if payload.reportDate:
+        try:
+            report_date = datetime.strptime(payload.reportDate, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Formato de fecha inválido. Usa YYYY-MM-DD")
+
+    try:
+        if payload.reportType.lower() == "daily":
+            if report_date is None:
+                report_date = date.today() - timedelta(days=1)  # Ayer
+
+            result = await generate_and_save_daily_report(
+                campaign_id=payload.campaignId,
+                report_date=report_date,
+                db=db,
+            )
+
+        elif payload.reportType.lower() == "weekly":
+            if report_date is None:
+                # Calcular el domingo pasado
+                today = date.today()
+                days_since_sunday = (today.weekday() + 1) % 7
+                if days_since_sunday == 0:
+                    days_since_sunday = 7
+                report_date = today - timedelta(days=days_since_sunday)
+
+            result = await generate_and_save_weekly_report(
+                campaign_id=payload.campaignId,
+                week_end_date=report_date,
+                db=db,
+            )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Tipo de reporte inválido. Usa 'daily' o 'weekly'"
+            )
+
+        return result
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generando reporte: {str(e)}")
+
+
+@router.post("/campaigns/{campaign_id}/daily-pdf")
+async def generate_daily_pdf(
+    campaign_id: str,
+    report_date: str = Query(None, description="Fecha del reporte (YYYY-MM-DD)"),
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Genera un PDF del reporte diario más reciente o de una fecha específica.
+    """
+    from ..services.campaign_report_service import generate_daily_report
+
+    # Verificar campaña
+    campaign = await db.get(models.Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if campaign.userId != current_user["id"] and current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    # Parsear fecha
+    if report_date:
+        try:
+            parsed_date = datetime.strptime(report_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Formato de fecha inválido")
+    else:
+        parsed_date = date.today() - timedelta(days=1)
+
+    # Generar reporte (sin guardar)
+    report_data = await generate_daily_report(campaign_id, parsed_date, db)
+
+    # Preparar payload para PDF
+    pdf_payload = {
+        "report_type": "daily_comprehensive",
+        "campaign": report_data["campaign"],
+        "report_date": report_data["report_date"],
+        "summary": report_data["summary"],
+        "news": report_data["news"],
+        "social": report_data["social"],
+        "topics": report_data["topics"],
+        "risk_alerts": report_data["risk_alerts"],
+    }
+
+    suggested_name = f"Reporte_Diario_{campaign.name}_{parsed_date.isoformat()}"
+    return await _proxy_pdf_service(pdf_payload, suggested_name)
+
+
+@router.post("/campaigns/{campaign_id}/weekly-pdf")
+async def generate_weekly_pdf(
+    campaign_id: str,
+    week_end_date: str = Query(None, description="Último día de la semana (YYYY-MM-DD)"),
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Genera un PDF del reporte semanal más reciente o de una semana específica.
+    """
+    from ..services.campaign_report_service import generate_weekly_report
+
+    # Verificar campaña
+    campaign = await db.get(models.Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if campaign.userId != current_user["id"] and current_user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    # Parsear fecha
+    if week_end_date:
+        try:
+            parsed_date = datetime.strptime(week_end_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Formato de fecha inválido")
+    else:
+        # Calcular domingo pasado
+        today = date.today()
+        days_since_sunday = (today.weekday() + 1) % 7
+        if days_since_sunday == 0:
+            days_since_sunday = 7
+        parsed_date = today - timedelta(days=days_since_sunday)
+
+    # Generar reporte (sin guardar)
+    report_data = await generate_weekly_report(campaign_id, parsed_date, db)
+
+    # Preparar payload para PDF
+    pdf_payload = {
+        "report_type": "weekly_comprehensive",
+        "campaign": report_data["campaign"],
+        "period": report_data["period"],
+        "summary": report_data["summary"],
+        "comparison": report_data["comparison"],
+        "daily_trend": report_data["daily_trend"],
+        "news": report_data["news"],
+        "social": report_data["social"],
+        "topics": report_data["topics"],
+        "narratives": report_data.get("narratives", []),
+        "risk_analysis": report_data["risk_analysis"],
+        "insights": report_data["insights"],
+    }
+
+    suggested_name = f"Reporte_Semanal_{campaign.name}_{report_data['period']['start_date']}_{report_data['period']['end_date']}"
     return await _proxy_pdf_service(pdf_payload, suggested_name)

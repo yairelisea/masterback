@@ -12,6 +12,9 @@ from .services.ingest_auto import kickoff_campaign_ingest
 log = logging.getLogger("scheduler")
 scheduler: AsyncIOScheduler | None = None
 
+# Timezone de México para los reportes
+MX_TZ = pytz.timezone("America/Monterrey")
+
 async def start_scheduler():
     global scheduler
     if os.getenv("RUN_SCHEDULER", "true").lower() != "true":
@@ -128,6 +131,128 @@ async def social_monitoring_tick():
         log.info("✅ social_monitoring_tick completado")
 
 
+# ============================================================================
+# DAILY REPORT TICK - Genera reportes diarios automáticamente
+# ============================================================================
+async def daily_report_tick():
+    """
+    Genera reportes diarios para todas las campañas con monitoreo activo.
+    Se ejecuta todos los días a las 6:00 AM (después del social_monitoring_tick).
+
+    El reporte incluye:
+    - Noticias del día anterior
+    - Posts de redes sociales del día anterior
+    - Análisis de sentimiento
+    - Alertas de riesgo
+    """
+    from .services.campaign_report_service import generate_and_save_daily_report
+
+    log.info("📊 Iniciando daily_report_tick")
+
+    # Generar reporte del día anterior
+    yesterday = date.today() - timedelta(days=1)
+
+    async with SessionLocal() as session:
+        # Obtener campañas con monitoreo activo o con autoEnabled
+        query = (
+            select(models.Campaign.id)
+            .where(models.Campaign.autoEnabled == True)
+        )
+        result = await session.execute(query)
+        campaign_ids = [row[0] for row in result.all()]
+
+        if not campaign_ids:
+            log.info("📭 No hay campañas activas para generar reportes diarios")
+            return
+
+        log.info(f"📊 Generando reportes diarios para {len(campaign_ids)} campañas")
+
+        for campaign_id in campaign_ids:
+            try:
+                async with SessionLocal() as report_session:
+                    result = await generate_and_save_daily_report(
+                        campaign_id=campaign_id,
+                        report_date=yesterday,
+                        db=report_session,
+                    )
+
+                    if result.get("success"):
+                        log.info(f"✅ Reporte diario generado para campaña {campaign_id}")
+                    else:
+                        log.warning(f"⚠️ Error en reporte diario: {result.get('error')}")
+
+            except Exception as e:
+                log.error(f"❌ Error generando reporte diario para {campaign_id}: {e}")
+                continue
+
+        log.info("✅ daily_report_tick completado")
+
+
+# ============================================================================
+# WEEKLY REPORT TICK - Genera reportes semanales los lunes
+# ============================================================================
+async def weekly_report_tick():
+    """
+    Genera reportes semanales para todas las campañas con monitoreo activo.
+    Se ejecuta todos los lunes a las 7:00 AM.
+
+    El reporte incluye:
+    - Resumen de la semana anterior (lunes a domingo)
+    - Tendencias de sentimiento día a día
+    - Comparativa con la semana anterior
+    - Narrativas principales
+    - Análisis de riesgo
+    """
+    from .services.campaign_report_service import generate_and_save_weekly_report
+
+    log.info("📊 Iniciando weekly_report_tick")
+
+    # La semana anterior termina el domingo pasado
+    today = date.today()
+    # Calcular el domingo pasado (si hoy es lunes, es ayer)
+    days_since_sunday = (today.weekday() + 1) % 7
+    if days_since_sunday == 0:
+        days_since_sunday = 7  # Si hoy es domingo, usamos el domingo anterior
+    last_sunday = today - timedelta(days=days_since_sunday)
+
+    log.info(f"📅 Generando reportes semanales para semana que terminó: {last_sunday}")
+
+    async with SessionLocal() as session:
+        # Obtener campañas activas
+        query = (
+            select(models.Campaign.id)
+            .where(models.Campaign.autoEnabled == True)
+        )
+        result = await session.execute(query)
+        campaign_ids = [row[0] for row in result.all()]
+
+        if not campaign_ids:
+            log.info("📭 No hay campañas activas para generar reportes semanales")
+            return
+
+        log.info(f"📊 Generando reportes semanales para {len(campaign_ids)} campañas")
+
+        for campaign_id in campaign_ids:
+            try:
+                async with SessionLocal() as report_session:
+                    result = await generate_and_save_weekly_report(
+                        campaign_id=campaign_id,
+                        week_end_date=last_sunday,
+                        db=report_session,
+                    )
+
+                    if result.get("success"):
+                        log.info(f"✅ Reporte semanal generado para campaña {campaign_id}")
+                    else:
+                        log.warning(f"⚠️ Error en reporte semanal: {result.get('error')}")
+
+            except Exception as e:
+                log.error(f"❌ Error generando reporte semanal para {campaign_id}: {e}")
+                continue
+
+        log.info("✅ weekly_report_tick completado")
+
+
 async def schedule_campaigns():
     if scheduler is None:
         return
@@ -138,8 +263,30 @@ async def schedule_campaigns():
     # Esto permite procesar posts de las últimas 24 horas sin interferir con horarios pico
     scheduler.add_job(
         social_monitoring_tick,
-        CronTrigger(hour="3", minute="0", timezone=pytz.timezone("America/Monterrey")),
+        CronTrigger(hour="3", minute="0", timezone=MX_TZ),
         id="social_monitoring_daily",
         replace_existing=True,
     )
-    log.info("📅 Scheduled: campaign_tick (HH:05), social_monitoring_tick (03:00 MX)")
+
+    # Generar reportes diarios a las 6:00 AM (después del social monitoring)
+    scheduler.add_job(
+        daily_report_tick,
+        CronTrigger(hour="6", minute="0", timezone=MX_TZ),
+        id="daily_report_generation",
+        replace_existing=True,
+    )
+
+    # Generar reportes semanales los lunes a las 7:00 AM
+    scheduler.add_job(
+        weekly_report_tick,
+        CronTrigger(day_of_week="mon", hour="7", minute="0", timezone=MX_TZ),
+        id="weekly_report_generation",
+        replace_existing=True,
+    )
+
+    log.info(
+        "📅 Scheduled: campaign_tick (HH:05), "
+        "social_monitoring_tick (03:00 MX), "
+        "daily_report_tick (06:00 MX), "
+        "weekly_report_tick (lunes 07:00 MX)"
+    )
