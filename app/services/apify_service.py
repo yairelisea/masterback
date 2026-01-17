@@ -10,7 +10,13 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 
-from apify_client import ApifyClient
+# Apify client es opcional (puede no estar instalado o tener versión incompatible)
+try:
+    from apify_client import ApifyClient
+    APIFY_AVAILABLE = True
+except ImportError:
+    ApifyClient = None
+    APIFY_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +42,10 @@ DEFAULT_DAYS_BACK = 1  # Solo últimas 24 horas
 # ============================================================================
 # CLIENTE DE APIFY
 # ============================================================================
-def get_apify_client() -> ApifyClient:
+def get_apify_client():
     """Obtiene un cliente de Apify configurado"""
+    if not APIFY_AVAILABLE:
+        raise ValueError("apify-client no está instalado o tiene versión incompatible. Instala con: pip install apify-client>=1.6.0")
     if not APIFY_API_TOKEN:
         raise ValueError("APIFY_API_TOKEN no está configurado en las variables de entorno")
     return ApifyClient(APIFY_API_TOKEN)

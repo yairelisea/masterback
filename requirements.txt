@@ -61,4 +61,4 @@ watchfiles==1.1.0
 websockets==15.0.1
 perplexityai
 weasyprint==62.3
-apify-client==1.8.1
+apify-client>=1.6.0,<1.8.0
