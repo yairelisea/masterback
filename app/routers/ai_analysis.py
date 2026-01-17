@@ -13,7 +13,7 @@ import time
 # Importar el servicio de Perplexity (para analyze-news legacy)
 from ..services.perplexity_service import perplexity_service
 from ..services.query_builder import build_basic_query
-from ..services.apify_service import scrape_news_site, APIFY_AVAILABLE
+from ..services.apify_service import scrape_news_site, APIFY_AVAILABLE, APIFY_API_TOKEN
 from ..db import get_session
 from .. import models
 from ..models import (
@@ -108,6 +108,51 @@ async def analyze_news(
             "country": country,
             "user": effective_user,
         },
+    }
+
+
+# -----------------------------------------------------------------------------------
+# Endpoint: Diagnóstico de Apify
+# -----------------------------------------------------------------------------------
+
+@router.get("/apify-status")
+async def get_apify_status(
+    db: AsyncSession = Depends(get_session)
+):
+    """
+    Endpoint de diagnóstico para verificar la configuración de Apify.
+    """
+    import os
+
+    # Verificar configuración
+    token_configured = bool(APIFY_API_TOKEN)
+    token_preview = f"{APIFY_API_TOKEN[:8]}...{APIFY_API_TOKEN[-4:]}" if APIFY_API_TOKEN and len(APIFY_API_TOKEN) > 12 else "NO CONFIGURADO"
+
+    # Contar SourceLinks en la BD
+    source_links_count = await db.execute(select(func.count(SourceLink.id)))
+    total_sources = source_links_count.scalar() or 0
+
+    # Obtener ejemplo de SourceLinks
+    sample_sources = await db.execute(select(SourceLink).limit(5))
+    sources_sample = [{"url": sl.url, "type": sl.type.value if sl.type else None, "campaignId": sl.campaignId} for sl in sample_sources.scalars().all()]
+
+    return {
+        "apify_client_available": APIFY_AVAILABLE,
+        "apify_token_configured": token_configured,
+        "apify_token_preview": token_preview,
+        "total_source_links": total_sources,
+        "source_links_sample": sources_sample,
+        "env_check": {
+            "APIFY_API_TOKEN": "SET" if os.getenv("APIFY_API_TOKEN") else "NOT SET",
+            "PERPLEXITY_API_KEY": "SET" if os.getenv("PERPLEXITY_API_KEY") else "NOT SET",
+        },
+        "recommendations": []
+        if (APIFY_AVAILABLE and token_configured and total_sources > 0)
+        else [
+            "Instalar apify-client: pip install apify-client" if not APIFY_AVAILABLE else None,
+            "Configurar APIFY_API_TOKEN en variables de entorno" if not token_configured else None,
+            "Agregar SourceLinks (URLs de medios) a las campañas" if total_sources == 0 else None,
+        ]
     }
 
 

@@ -261,8 +261,9 @@ async def scrape_news_site(
     """
     Extrae artículos de un sitio de noticias que mencionen al candidato.
 
-    Usa el Website Content Crawler de Apify para extraer contenido de cualquier
-    sitio de noticias (El Sol de Tampico, La Razón, Milenio, etc.)
+    Usa Google Search Scraper de Apify para buscar directamente artículos
+    que mencionen al candidato en el sitio específico. Es mucho más rápido
+    y eficiente que crawlear todo el sitio.
 
     Args:
         site_url: URL del sitio de noticias (puede ser la página principal o una sección)
@@ -273,38 +274,110 @@ async def scrape_news_site(
     Returns:
         Lista de artículos con su contenido y metadata
     """
+    import asyncio
+
     client = get_apify_client()
 
     # Detectar si es un medio conocido
     domain = _get_domain_from_url(site_url)
     site_info = KNOWN_NEWS_SITES.get(domain, {"name": domain, "region": "Desconocido"})
 
-    logger.info(f"📰 Iniciando scraping de noticias: {site_info['name']} ({site_url})")
-    logger.info(f"   Candidato: {candidate_name}, Artículos máx: {max_posts}")
+    print(f"📰 Iniciando búsqueda en: {site_info['name']} ({domain})")
+    print(f"   Candidato: {candidate_name}, Artículos máx: {max_posts}, Días: {days_back}")
 
-    # Configuración del Website Content Crawler
+    # Usar Google Search para buscar artículos del candidato en ese sitio específico
+    # Esto es MUCHO más rápido que crawlear todo el sitio
+    search_query = f'"{candidate_name}" site:{domain}'
+
+    # Configuración del Google Search Scraper
     run_input = {
-        "startUrls": [{"url": site_url}],
-        "maxCrawlPages": max_posts * 2,  # Crawlear más páginas para encontrar suficientes relevantes
-        "maxCrawlDepth": 2,  # No ir muy profundo
-        "crawlerType": "cheerio",  # Más rápido que playwright
-        "includeUrlGlobs": [],  # Incluir todas las URLs
-        "excludeUrlGlobs": [
-            "**/tag/**",
-            "**/categoria/**",
-            "**/category/**",
-            "**/author/**",
-            "**/autor/**",
-            "**/page/**",
-            "**/wp-content/**",
-            "**/wp-admin/**",
-        ],
-        "maxRequestRetries": 2,
-        "maxRequestsPerMinute": 60,
+        "queries": search_query,
+        "maxPagesPerQuery": 1,  # Solo primera página de resultados
+        "resultsPerPage": max_posts,
+        "mobileResults": False,
+        "languageCode": "es",
+        "countryCode": "mx",
     }
 
     try:
-        run = client.actor(APIFY_ACTORS["news_site"]).call(run_input=run_input)
+        print(f"   🔍 Buscando: {search_query}")
+
+        # Ejecutar en thread pool para no bloquear el event loop
+        loop = asyncio.get_event_loop()
+        run = await loop.run_in_executor(
+            None,
+            lambda: client.actor("apify/google-search-scraper").call(run_input=run_input, timeout_secs=120)
+        )
+
+        items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+        print(f"   📊 Resultados de Google: {len(items)}")
+
+        # Procesar resultados de búsqueda
+        filtered_articles = []
+
+        for item in items:
+            # Google Search devuelve resultados orgánicos en "organicResults"
+            organic_results = item.get("organicResults", [])
+
+            for result in organic_results[:max_posts]:
+                article = {
+                    "platform": "news_site",
+                    "post_id": result.get("url"),
+                    "url": result.get("url"),
+                    "content": result.get("description", ""),
+                    "author": site_info.get("name"),
+                    "date": result.get("date"),  # Google a veces incluye fecha
+                    "title": result.get("title"),
+                    "description": result.get("description"),
+                    "source_name": site_info.get("name"),
+                    "source_region": site_info.get("region"),
+                }
+                filtered_articles.append(article)
+
+                if len(filtered_articles) >= max_posts:
+                    break
+
+        print(f"   ✅ Artículos encontrados: {len(filtered_articles)}")
+        return filtered_articles
+
+    except Exception as e:
+        print(f"   ❌ Error en búsqueda Google ({site_info['name']}): {e}")
+        # Fallback: intentar con Web Scraper básico si Google falla
+        return await _fallback_web_scraper(site_url, candidate_name, max_posts, site_info)
+
+
+async def _fallback_web_scraper(
+    site_url: str,
+    candidate_name: str,
+    max_posts: int,
+    site_info: Dict[str, str],
+) -> List[Dict[str, Any]]:
+    """
+    Fallback usando Web Scraper si Google Search falla.
+    Más lento pero funciona como respaldo.
+    """
+    import asyncio
+
+    try:
+        client = get_apify_client()
+        print(f"   🔄 Intentando fallback con Web Scraper...")
+
+        # Configuración más ligera del Website Content Crawler
+        run_input = {
+            "startUrls": [{"url": site_url}],
+            "maxCrawlPages": max_posts,
+            "maxCrawlDepth": 1,  # Solo un nivel
+            "crawlerType": "cheerio",
+            "maxRequestRetries": 1,
+            "maxRequestsPerMinute": 30,
+        }
+
+        loop = asyncio.get_event_loop()
+        run = await loop.run_in_executor(
+            None,
+            lambda: client.actor("apify/website-content-crawler").call(run_input=run_input, timeout_secs=60)
+        )
+
         items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
 
         # Filtrar artículos que mencionen al candidato
@@ -312,27 +385,24 @@ async def scrape_news_site(
         candidate_lower = candidate_name.lower()
 
         for item in items:
-            # Buscar en título y contenido
             title = (item.get("title") or "").lower()
             text = (item.get("text") or "").lower()
             description = (item.get("description") or "").lower()
 
-            # Verificar si el artículo menciona al candidato
             if (candidate_lower in title or
                 candidate_lower in text or
                 candidate_lower in description):
                 filtered_articles.append(_normalize_news_article(item, site_info))
 
-            # Limitar resultados
             if len(filtered_articles) >= max_posts:
                 break
 
-        logger.info(f"✅ Noticias ({site_info['name']}): {len(items)} páginas, {len(filtered_articles)} artículos relevantes")
+        print(f"   ✅ Fallback encontró: {len(filtered_articles)} artículos")
         return filtered_articles
 
     except Exception as e:
-        logger.error(f"❌ Error en scraping de noticias ({site_info['name']}): {e}")
-        raise
+        print(f"   ❌ Fallback también falló: {e}")
+        return []
 
 
 def _normalize_news_article(item: Dict[str, Any], site_info: Dict[str, str]) -> Dict[str, Any]:
