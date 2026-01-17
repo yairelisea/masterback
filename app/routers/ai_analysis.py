@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Query, Header, HTTPException, Request, Depends
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta, timezone
-from sqlalchemy import select, desc, func, and_
+from sqlalchemy import select, desc, func, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from collections import Counter
@@ -130,10 +130,18 @@ async def get_weekly_report(
     try:
         start_time = time.time()
 
-        # 1. Buscar la campaña por query
-        campaign_query = select(Campaign).where(Campaign.query == q)
+        # 1. Buscar la campaña por query, name o id (flexible)
+        campaign_query = select(Campaign).where(
+            or_(
+                Campaign.query == q,
+                Campaign.name == q,
+                Campaign.id == q,
+                Campaign.query.ilike(f"%{q}%"),
+                Campaign.name.ilike(f"%{q}%"),
+            )
+        )
         result = await db.execute(campaign_query)
-        campaign = result.scalar_one_or_none()
+        campaign = result.scalars().first()
 
         if not campaign:
             # Si no hay campaña, usar Perplexity directamente (fallback)
@@ -420,10 +428,18 @@ async def get_daily_summary(
     try:
         start_time = time.time()
 
-        # 1. Buscar la campaña por query
-        campaign_query = select(Campaign).where(Campaign.query == q)
+        # 1. Buscar la campaña por query, name o id (flexible)
+        campaign_query = select(Campaign).where(
+            or_(
+                Campaign.query == q,
+                Campaign.name == q,
+                Campaign.id == q,
+                Campaign.query.ilike(f"%{q}%"),
+                Campaign.name.ilike(f"%{q}%"),
+            )
+        )
         result = await db.execute(campaign_query)
-        campaign = result.scalar_one_or_none()
+        campaign = result.scalars().first()
 
         if not campaign:
             # Si no hay campaña, usar Perplexity directamente (fallback)
