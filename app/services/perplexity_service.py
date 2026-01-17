@@ -763,6 +763,139 @@ Responde SOLO con JSON válido (sin texto antes o después):
                 "log_de_evidencia": []
             }
 
+    async def analyze_collected_data(
+        self,
+        actor_name: str,
+        data: List[Dict[str, Any]],
+        metricas: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Analiza datos recopilados de MonitoringSources con IA.
+        Recibe posts de redes sociales y noticias, y genera un análisis inteligente.
+        """
+        print(f"\n🤖 Analizando {len(data)} items para: {actor_name}")
+
+        # Preparar resumen de datos para el prompt
+        redes_data = [d for d in data if d.get("tipo") == "red_social"]
+        noticias_data = [d for d in data if d.get("tipo") == "noticia"]
+
+        # Construir contexto de contenido
+        contenido_redes = "\n".join([
+            f"- [{d.get('plataforma', 'red')}] {d.get('autor', 'Anónimo')}: {d.get('contenido', '')[:150]}"
+            for d in redes_data[:15]
+        ])
+
+        contenido_noticias = "\n".join([
+            f"- {d.get('titulo', 'Sin título')}: {d.get('resumen', '')[:100] if d.get('resumen') else 'Sin resumen'}"
+            for d in noticias_data[:10]
+        ])
+
+        analysis_prompt = f"""
+Analiza los siguientes datos recopilados sobre "{actor_name}" de nuestras fuentes de monitoreo:
+
+📊 MÉTRICAS GENERALES:
+- Total menciones: {metricas.get('total', 0)}
+- Redes sociales: {metricas.get('redes', 0)}
+- Noticias: {metricas.get('noticias', 0)}
+- Sentimiento: Positivo {metricas.get('sentimiento', {}).get('positive', 0)}, Negativo {metricas.get('sentimiento', {}).get('negative', 0)}, Neutral {metricas.get('sentimiento', {}).get('neutral', 0)}
+- Engagement total: Likes {metricas.get('engagement', {}).get('likes', 0)}, Shares {metricas.get('engagement', {}).get('shares', 0)}, Comentarios {metricas.get('engagement', {}).get('comments', 0)}
+- Plataformas: {metricas.get('plataformas', {})}
+- Temas detectados: {', '.join(metricas.get('temas', [])) if metricas.get('temas') else 'Ninguno'}
+
+📱 CONTENIDO DE REDES SOCIALES:
+{contenido_redes if contenido_redes else 'Sin contenido de redes sociales'}
+
+📰 NOTICIAS:
+{contenido_noticias if contenido_noticias else 'Sin noticias'}
+
+Responde SOLO con JSON válido (sin texto antes o después):
+{{
+  "resumen_ejecutivo": "Resumen ejecutivo de 2-3 párrafos analizando la situación actual, tendencias y percepción pública basándose en los datos proporcionados",
+  "analisis_estrategico": "Análisis FODA basado en los datos: Fortalezas, Debilidades, Oportunidades y Amenazas detectadas",
+  "recomendaciones": ["Recomendación 1 basada en datos", "Recomendación 2", "Recomendación 3"],
+  "narrativas_detectadas": ["Narrativa principal 1", "Narrativa 2"],
+  "alertas": ["Alerta si hay contenido de riesgo"]
+}}
+"""
+
+        try:
+            chat_response = await self.client.chat.completions.create(
+                model="sonar-reasoning",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "Eres un analista político experto. Analizas datos de monitoreo de redes sociales y noticias para generar insights estratégicos. Respondes SOLO con JSON válido."
+                    },
+                    {"role": "user", "content": analysis_prompt},
+                ],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "analysis_report",
+                        "strict": True,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "resumen_ejecutivo": {"type": "string"},
+                                "analisis_estrategico": {"type": "string"},
+                                "recomendaciones": {
+                                    "type": "array",
+                                    "items": {"type": "string"}
+                                },
+                                "narrativas_detectadas": {
+                                    "type": "array",
+                                    "items": {"type": "string"}
+                                },
+                                "alertas": {
+                                    "type": "array",
+                                    "items": {"type": "string"}
+                                }
+                            },
+                            "required": ["resumen_ejecutivo", "analisis_estrategico", "recomendaciones"],
+                            "additionalProperties": False
+                        }
+                    }
+                },
+            )
+
+            analysis_content = chat_response.choices[0].message.content
+
+            if not analysis_content or analysis_content.strip() == "":
+                print(f"⚠️ Respuesta vacía de Perplexity")
+                return self._default_analysis(actor_name, metricas)
+
+            try:
+                analysis_json = json.loads(analysis_content)
+                print(f"✅ Análisis completado para {actor_name}")
+                return analysis_json
+            except json.JSONDecodeError as je:
+                print(f"⚠️ Error decodificando JSON: {je}")
+                return self._default_analysis(actor_name, metricas)
+
+        except Exception as e:
+            print(f"❌ Error en análisis con Perplexity: {e}")
+            return self._default_analysis(actor_name, metricas)
+
+    def _default_analysis(self, actor_name: str, metricas: Dict[str, Any]) -> Dict[str, Any]:
+        """Genera un análisis por defecto cuando Perplexity falla"""
+        total = metricas.get('total', 0)
+        sentimiento = metricas.get('sentimiento', {})
+        max_sent = max(sentimiento, key=sentimiento.get) if sentimiento else "neutral"
+
+        return {
+            "resumen_ejecutivo": f"Análisis de {actor_name}: Se detectaron {total} menciones en el período analizado. "
+                                 f"El sentimiento predominante es {max_sent} con {sentimiento.get(max_sent, 0)} menciones.",
+            "analisis_estrategico": f"Basado en los datos recopilados, se observa una presencia "
+                                    f"{'activa' if total > 20 else 'moderada'} en medios y redes sociales.",
+            "recomendaciones": [
+                "Continuar monitoreando las fuentes configuradas",
+                "Analizar contenido de alto engagement para identificar temas clave",
+                "Responder a menciones negativas de manera oportuna"
+            ],
+            "narrativas_detectadas": metricas.get('temas', [])[:3],
+            "alertas": []
+        }
+
 
 # Instancia global del servicio
 perplexity_service = PerplexityService()
