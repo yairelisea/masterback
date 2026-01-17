@@ -123,6 +123,11 @@ async def on_startup():
             'ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS search_variants JSONB'
         )
 
+        # Columna analysis_metadata en analyses (idempotente)
+        await conn.exec_driver_sql(
+            'ALTER TABLE analyses ADD COLUMN IF NOT EXISTS analysis_metadata JSONB'
+        )
+
         # Índices para actor_reports (reportes históricos)
         await conn.exec_driver_sql(
             'CREATE INDEX IF NOT EXISTS ix_actor_reports_actorname ON actor_reports ("actorName")'
