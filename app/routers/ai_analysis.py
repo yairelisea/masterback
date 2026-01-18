@@ -13,7 +13,11 @@ import time
 # Importar el servicio de Perplexity (para analyze-news legacy)
 from ..services.perplexity_service import perplexity_service
 from ..services.query_builder import build_basic_query
-from ..services.apify_service import scrape_news_site, APIFY_AVAILABLE, APIFY_API_TOKEN
+from ..services.apify_service import (
+    scrape_news_site, scrape_facebook_page, scrape_twitter_account,
+    scrape_instagram_profile, scrape_monitoring_source,
+    APIFY_AVAILABLE, APIFY_API_TOKEN
+)
 from ..db import get_session
 from .. import models
 from ..models import (
@@ -164,6 +168,177 @@ async def get_apify_status(
             "Instalar apify-client: pip install apify-client" if not APIFY_AVAILABLE else None,
             "Configurar APIFY_API_TOKEN en variables de entorno" if not token_configured else None,
             "Agregar fuentes desde el panel de admin (Fuentes de Monitoreo)" if total_sources == 0 else None,
+        ],
+        "test_scraping_endpoint": "/ai/test-scraping?campaign_id=<ID_CAMPANA>",
+        "note": "Usa /ai/test-scraping para probar el scraping real de las fuentes"
+    }
+
+
+# -----------------------------------------------------------------------------------
+# NUEVO: Endpoint de prueba de scraping
+# -----------------------------------------------------------------------------------
+
+@router.get("/test-scraping")
+async def test_scraping(
+    campaign_id: str = Query(..., description="ID de la campaña para probar el scraping"),
+    max_articles: int = Query(5, ge=1, le=20, description="Máximo de artículos por fuente"),
+    days_back: int = Query(7, ge=1, le=30, description="Días hacia atrás para buscar"),
+    db: AsyncSession = Depends(get_session)
+):
+    """
+    Endpoint de DIAGNÓSTICO para probar el scraping de Apify.
+
+    Ejecuta un scraping de prueba en las fuentes configuradas de la campaña
+    y muestra los resultados encontrados SIN procesarlos con Perplexity.
+
+    Útil para verificar:
+    - Si Apify está funcionando correctamente
+    - Si las fuentes configuradas encuentran contenido del candidato
+    - Qué artículos/posts está encontrando el sistema
+    """
+    import time
+    start_time = time.time()
+
+    # 1. Verificar que Apify esté disponible
+    if not APIFY_AVAILABLE:
+        return {
+            "success": False,
+            "error": "apify-client no está instalado",
+            "fix": "pip install apify-client>=1.6.0"
+        }
+
+    if not APIFY_API_TOKEN:
+        return {
+            "success": False,
+            "error": "APIFY_API_TOKEN no está configurado",
+            "fix": "Configura la variable de entorno APIFY_API_TOKEN"
+        }
+
+    # 2. Buscar la campaña
+    campaign_query = select(Campaign).where(Campaign.id == campaign_id)
+    result = await db.execute(campaign_query)
+    campaign = result.scalars().first()
+
+    if not campaign:
+        return {
+            "success": False,
+            "error": f"Campaña no encontrada: {campaign_id}",
+            "available_campaigns": "Usa /campaigns para ver las campañas disponibles"
+        }
+
+    actor_name = campaign.query or campaign.name
+
+    # 3. Obtener todas las fuentes de la campaña
+    source_links_query = select(SourceLink).where(SourceLink.campaignId == campaign_id)
+    source_links_result = await db.execute(source_links_query)
+    source_links = source_links_result.scalars().all()
+
+    monitoring_sources_query = select(MonitoringSource).where(MonitoringSource.campaignId == campaign_id)
+    monitoring_sources_result = await db.execute(monitoring_sources_query)
+    monitoring_sources = monitoring_sources_result.scalars().all()
+
+    all_sources = []
+    for sl in source_links:
+        all_sources.append({
+            "url": sl.url,
+            "platform": sl.type.value if sl.type else "news_site",
+            "origen": "source_links"
+        })
+    for ms in monitoring_sources:
+        all_sources.append({
+            "url": ms.url,
+            "platform": ms.platform or "news_site",
+            "origen": "monitoring_sources"
+        })
+
+    if not all_sources:
+        return {
+            "success": False,
+            "campaign": {
+                "id": campaign.id,
+                "name": campaign.name,
+                "query": campaign.query
+            },
+            "error": "No hay fuentes configuradas para esta campaña",
+            "fix": "Agrega fuentes desde el panel de Fuentes de Monitoreo en el admin"
+        }
+
+    # 4. Ejecutar scraping de prueba en cada fuente
+    scraping_results = []
+    total_articles_found = 0
+
+    for source in all_sources:
+        source_result = {
+            "url": source["url"],
+            "platform": source["platform"],
+            "origen": source["origen"],
+            "status": "pending",
+            "articles_found": 0,
+            "articles": [],
+            "error": None
+        }
+
+        try:
+            print(f"🔍 Test scraping: {source['url']} para '{actor_name}'")
+
+            # Ejecutar scraping según la plataforma
+            articles = await scrape_news_site(
+                site_url=source["url"],
+                candidate_name=actor_name,
+                max_posts=max_articles,
+                days_back=days_back
+            )
+
+            source_result["status"] = "success"
+            source_result["articles_found"] = len(articles)
+            source_result["articles"] = [
+                {
+                    "title": art.get("title"),
+                    "url": art.get("url"),
+                    "description": art.get("description") or art.get("content", "")[:200],
+                    "date": art.get("date"),
+                    "source_name": art.get("source_name")
+                }
+                for art in articles
+            ]
+            total_articles_found += len(articles)
+
+        except Exception as e:
+            source_result["status"] = "error"
+            source_result["error"] = str(e)
+            print(f"   ❌ Error: {e}")
+
+        scraping_results.append(source_result)
+
+    elapsed_time = time.time() - start_time
+
+    return {
+        "success": True,
+        "campaign": {
+            "id": campaign.id,
+            "name": campaign.name,
+            "query": actor_name
+        },
+        "search_params": {
+            "actor_searched": actor_name,
+            "max_articles_per_source": max_articles,
+            "days_back": days_back
+        },
+        "summary": {
+            "total_sources": len(all_sources),
+            "sources_with_results": sum(1 for r in scraping_results if r["articles_found"] > 0),
+            "total_articles_found": total_articles_found,
+            "elapsed_time_seconds": round(elapsed_time, 2)
+        },
+        "results_by_source": scraping_results,
+        "next_steps": [
+            f"Si hay artículos: El reporte semanal/diario los incluirá automáticamente",
+            f"Si NO hay artículos: Verifica que '{actor_name}' aparece en las fuentes configuradas",
+            "Puedes agregar más fuentes desde Fuentes de Monitoreo"
+        ] if total_articles_found == 0 else [
+            f"✅ Se encontraron {total_articles_found} artículos sobre '{actor_name}'",
+            "Genera un reporte con: /ai/weekly-report?q=" + (campaign.query or campaign.name),
+            "O un resumen diario con: /ai/daily-summary?q=" + (campaign.query or campaign.name)
         ]
     }
 
