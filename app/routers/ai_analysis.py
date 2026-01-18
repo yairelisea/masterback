@@ -279,25 +279,57 @@ async def test_scraping(
         }
 
         try:
-            print(f"🔍 Test scraping: {source['url']} para '{actor_name}'")
+            platform = source["platform"].lower()
+            print(f"🔍 Test scraping [{platform}]: {source['url']} para '{actor_name}'")
 
             # Ejecutar scraping según la plataforma
-            articles = await scrape_news_site(
-                site_url=source["url"],
-                candidate_name=actor_name,
-                max_posts=max_articles,
-                days_back=days_back
-            )
+            if platform == "facebook":
+                articles = await scrape_facebook_page(
+                    page_url=source["url"],
+                    candidate_name=actor_name,
+                    max_posts=max_articles,
+                    days_back=days_back
+                )
+            elif platform in ("twitter", "x"):
+                articles = await scrape_twitter_account(
+                    account_url=source["url"],
+                    candidate_name=actor_name,
+                    max_posts=max_articles,
+                    days_back=days_back
+                )
+            elif platform == "instagram":
+                articles = await scrape_instagram_profile(
+                    profile_url=source["url"],
+                    candidate_name=actor_name,
+                    max_posts=max_articles,
+                    days_back=days_back
+                )
+            else:
+                # Default: tratar como sitio de noticias
+                articles = await scrape_news_site(
+                    site_url=source["url"],
+                    candidate_name=actor_name,
+                    max_posts=max_articles,
+                    days_back=days_back
+                )
 
             source_result["status"] = "success"
             source_result["articles_found"] = len(articles)
             source_result["articles"] = [
                 {
                     "title": art.get("title"),
-                    "url": art.get("url"),
+                    "url": art.get("url") or art.get("post_id"),
+                    "content": art.get("content", "")[:300] if art.get("content") else None,
                     "description": art.get("description") or art.get("content", "")[:200],
                     "date": art.get("date"),
-                    "source_name": art.get("source_name")
+                    "author": art.get("author"),
+                    "source_name": art.get("source_name"),
+                    "engagement": {
+                        "likes": art.get("likes"),
+                        "shares": art.get("shares"),
+                        "comments": art.get("comments"),
+                        "views": art.get("views")
+                    } if platform in ("facebook", "twitter", "instagram") else None
                 }
                 for art in articles
             ]
@@ -307,6 +339,8 @@ async def test_scraping(
             source_result["status"] = "error"
             source_result["error"] = str(e)
             print(f"   ❌ Error: {e}")
+            import traceback
+            traceback.print_exc()
 
         scraping_results.append(source_result)
 
