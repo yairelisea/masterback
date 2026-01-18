@@ -139,15 +139,37 @@ async def on_startup():
             'CREATE INDEX IF NOT EXISTS ix_actor_reports_createdat ON actor_reports ("createdAt")'
         )
 
-        # Agregar valor 'news_site' al enum socialplatform si no existe
-        # PostgreSQL requiere ALTER TYPE para agregar valores a un enum existente
-        try:
-            await conn.exec_driver_sql(
-                "ALTER TYPE socialplatform ADD VALUE IF NOT EXISTS 'news_site'"
-            )
-        except Exception:
-            # Ignorar si el valor ya existe o el enum no existe aún
-            pass
+    # Agregar valor 'news_site' al enum socialplatform si no existe
+    # IMPORTANTE: ALTER TYPE ADD VALUE no puede ejecutarse dentro de una transacción
+    # Usamos psycopg directamente con autocommit
+    try:
+        import os
+        import psycopg
+
+        db_url = os.getenv("DATABASE_URL", "")
+        # psycopg usa el formato postgresql://
+        if db_url.startswith("postgres://"):
+            db_url = db_url.replace("postgres://", "postgresql://", 1)
+
+        # Conexión síncrona con autocommit para ALTER TYPE
+        with psycopg.connect(db_url, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                # Verificar si el valor ya existe
+                cur.execute("""
+                    SELECT EXISTS(
+                        SELECT 1 FROM pg_enum
+                        WHERE enumlabel = 'news_site'
+                        AND enumtypid = (SELECT oid FROM pg_type WHERE typname = 'socialplatform')
+                    )
+                """)
+                exists = cur.fetchone()[0]
+                if not exists:
+                    cur.execute("ALTER TYPE socialplatform ADD VALUE 'news_site'")
+                    print("✅ Valor 'news_site' agregado al enum socialplatform")
+                else:
+                    print("ℹ️ Valor 'news_site' ya existe en enum socialplatform")
+    except Exception as e:
+        print(f"⚠️ No se pudo agregar 'news_site' al enum: {e}")
 
     # Inicia jobs programados (alertas y campañas autoEnabled)
     try:
