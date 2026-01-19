@@ -186,6 +186,10 @@ class AnalysisEngine:
         print(f"      - Analizados con IA: {stats['analyzed']}")
         print(f"      - Errores: {stats['errors']}")
 
+        # Normalizar claves para el endpoint
+        stats["posts_analyzed"] = stats["analyzed"]
+        stats["posts_relevant"] = stats["matched"]
+
         return stats
 
     # =========================================================================
@@ -598,3 +602,193 @@ async def run_campaign_backfill(
     """Helper para retro-análisis de campaña (Momento B)"""
     engine = AnalysisEngine(db)
     return await engine.run_backfill_for_campaign(campaign_id=campaign_id, limit=limit)
+
+
+async def get_campaign_summary(
+    db: AsyncSession,
+    campaign_id: str,
+    days_back: int = 7
+) -> Dict[str, Any]:
+    """
+    Genera un resumen de análisis para una campaña basado en campaign_analyses.
+
+    Args:
+        db: Sesión de base de datos
+        campaign_id: ID de la campaña
+        days_back: Días hacia atrás para el resumen
+
+    Returns:
+        Diccionario con resumen ejecutivo, métricas, etc.
+    """
+    from datetime import timedelta
+    from collections import Counter
+    from ..models import CampaignAnalysis, RawScrapeData, Campaign
+
+    print(f"\n📊 Generando resumen para campaña {campaign_id}...")
+
+    # Obtener campaña
+    campaign_result = await db.execute(
+        select(Campaign).where(Campaign.id == campaign_id)
+    )
+    campaign = campaign_result.scalar_one_or_none()
+    campaign_name = campaign.name if campaign else "Desconocida"
+
+    # Calcular fecha límite
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_back)
+
+    # Obtener análisis de la campaña
+    query = (
+        select(CampaignAnalysis)
+        .where(
+            and_(
+                CampaignAnalysis.campaignId == campaign_id,
+                CampaignAnalysis.analyzedAt >= cutoff_date
+            )
+        )
+        .order_by(CampaignAnalysis.analyzedAt.desc())
+    )
+
+    result = await db.execute(query)
+    analyses = result.scalars().all()
+
+    print(f"   📋 Análisis encontrados: {len(analyses)}")
+
+    if not analyses:
+        # Si no hay análisis, devolver estructura vacía
+        return {
+            "campaign_id": campaign_id,
+            "campaign_name": campaign_name,
+            "total_posts": 0,
+            "executive_summary": f"No se encontraron datos para {campaign_name} en los últimos {days_back} días.",
+            "strategic_analysis": "Sin datos suficientes para análisis estratégico.",
+            "recommendations": ["Verificar las fuentes de monitoreo configuradas."],
+            "evidence_log": [],
+            "sentiment_distribution": {"positive": 0, "negative": 0, "neutral": 0},
+            "risk_distribution": {"bajo": 0, "medio": 0, "alto": 0, "critico": 0},
+            "total_engagement": {"likes": 0, "shares": 0, "comments": 0},
+            "top_topics": [],
+            "generated_at": datetime.now(timezone.utc).isoformat()
+        }
+
+    # Procesar métricas
+    sentiment_counts = {"positive": 0, "negative": 0, "neutral": 0}
+    risk_counts = {"bajo": 0, "medio": 0, "alto": 0, "critico": 0}
+    categories = []
+    all_keywords = []
+    evidence_log = []
+    total_likes = 0
+    total_shares = 0
+    total_comments = 0
+
+    for analysis in analyses:
+        # Sentimiento
+        if analysis.sentimentScore is not None:
+            if analysis.sentimentScore > 0.2:
+                sentiment_counts["positive"] += 1
+            elif analysis.sentimentScore < -0.2:
+                sentiment_counts["negative"] += 1
+            else:
+                sentiment_counts["neutral"] += 1
+
+        # Riesgo
+        if analysis.riskLevel:
+            risk_key = analysis.riskLevel.value.lower() if hasattr(analysis.riskLevel, 'value') else str(analysis.riskLevel).lower()
+            if risk_key in risk_counts:
+                risk_counts[risk_key] += 1
+
+        # Categorías
+        if analysis.category:
+            cat_value = analysis.category.value if hasattr(analysis.category, 'value') else str(analysis.category)
+            categories.append(cat_value)
+
+        # Keywords
+        if analysis.matchedKeywords:
+            all_keywords.extend(analysis.matchedKeywords)
+
+        # Evidencia
+        evidence_log.append({
+            "id": analysis.id,
+            "summary": analysis.summary or "Sin resumen",
+            "sentiment_score": analysis.sentimentScore,
+            "risk_level": analysis.riskLevel.value if analysis.riskLevel and hasattr(analysis.riskLevel, 'value') else str(analysis.riskLevel or "bajo"),
+            "category": analysis.category.value if analysis.category and hasattr(analysis.category, 'value') else str(analysis.category or "otros"),
+            "keywords": analysis.matchedKeywords or [],
+            "analyzed_at": analysis.analyzedAt.isoformat() if analysis.analyzedAt else None,
+        })
+
+    # Calcular top topics por categoría
+    category_counts = Counter(categories)
+    top_topics = [{"tema": cat, "menciones": count} for cat, count in category_counts.most_common(5)]
+
+    # Keyword más frecuentes
+    keyword_counts = Counter(all_keywords)
+    top_keywords = [kw for kw, _ in keyword_counts.most_common(10)]
+
+    # Determinar sentimiento predominante
+    max_sentiment = max(sentiment_counts, key=sentiment_counts.get)
+    total_posts = len(analyses)
+
+    # Determinar nivel de riesgo general
+    if risk_counts["critico"] > 0:
+        overall_risk = "CRÍTICO"
+    elif risk_counts["alto"] > total_posts * 0.2:
+        overall_risk = "ALTO"
+    elif risk_counts["medio"] > total_posts * 0.3:
+        overall_risk = "MEDIO"
+    else:
+        overall_risk = "BAJO"
+
+    # Generar resumen ejecutivo
+    executive_summary = f"""Análisis de {campaign_name} - Últimos {days_back} días:
+Se analizaron {total_posts} publicaciones.
+Sentimiento predominante: {max_sentiment} ({sentiment_counts[max_sentiment]} menciones).
+Nivel de riesgo general: {overall_risk}.
+Categorías principales: {', '.join([t['tema'] for t in top_topics[:3]]) if top_topics else 'N/A'}."""
+
+    # Generar análisis estratégico
+    strategic_analysis = f"""
+El monitoreo de redes sociales para {campaign_name} muestra una distribución de sentimiento:
+- Positivo: {sentiment_counts['positive']} ({round(sentiment_counts['positive']/total_posts*100, 1)}%)
+- Negativo: {sentiment_counts['negative']} ({round(sentiment_counts['negative']/total_posts*100, 1)}%)
+- Neutral: {sentiment_counts['neutral']} ({round(sentiment_counts['neutral']/total_posts*100, 1)}%)
+
+Distribución de riesgo reputacional:
+- Bajo: {risk_counts['bajo']}
+- Medio: {risk_counts['medio']}
+- Alto: {risk_counts['alto']}
+- Crítico: {risk_counts['critico']}
+
+Palabras clave más mencionadas: {', '.join(top_keywords[:5]) if top_keywords else 'N/A'}
+"""
+
+    # Generar recomendaciones
+    recommendations = []
+    if sentiment_counts["negative"] > sentiment_counts["positive"]:
+        recommendations.append("Considerar estrategia de comunicación para mejorar percepción.")
+    if risk_counts["alto"] + risk_counts["critico"] > 0:
+        recommendations.append(f"Revisar {risk_counts['alto'] + risk_counts['critico']} publicaciones de alto riesgo identificadas.")
+    if total_posts < 10:
+        recommendations.append("Aumentar fuentes de monitoreo para obtener más datos.")
+    recommendations.append("Continuar monitoreo activo de las fuentes configuradas.")
+
+    return {
+        "campaign_id": campaign_id,
+        "campaign_name": campaign_name,
+        "total_posts": total_posts,
+        "executive_summary": executive_summary,
+        "strategic_analysis": strategic_analysis,
+        "recommendations": recommendations,
+        "evidence_log": evidence_log[:50],  # Limitar a 50 para el reporte
+        "sentiment_distribution": sentiment_counts,
+        "risk_distribution": risk_counts,
+        "total_engagement": {
+            "likes": total_likes,
+            "shares": total_shares,
+            "comments": total_comments
+        },
+        "top_topics": top_topics,
+        "top_keywords": top_keywords,
+        "overall_risk": overall_risk,
+        "predominant_sentiment": max_sentiment,
+        "generated_at": datetime.now(timezone.utc).isoformat()
+    }

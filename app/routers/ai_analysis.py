@@ -392,6 +392,7 @@ async def test_scraping(
 async def get_weekly_report(
     q: str = Query(..., description="Nombre del actor político o query de campaña"),
     force_refresh: bool = Query(False, description="Forzar regeneración aunque exista cache"),
+    use_new_ingestion: bool = Query(True, description="Usar nuevo sistema de Ingesta Dirigida"),
     db: AsyncSession = Depends(get_session)
 ):
     """
@@ -399,6 +400,11 @@ async def get_weekly_report(
     1. Recopila datos de MonitoringSources (redes sociales) e IngestedItems (noticias)
     2. Envía los datos a Perplexity para análisis inteligente
     3. Combina métricas locales con análisis de IA
+
+    NUEVO: Si use_new_ingestion=True, usa el sistema de Ingesta Dirigida:
+    - Ejecuta scraping con Apify → raw_scrape_data
+    - Filtra por keywords → campaign_analyses
+    - Analiza con SOCMINT IA
     """
     try:
         start_time = time.time()
@@ -427,6 +433,102 @@ async def get_weekly_report(
                 }
             return {"error": "No se pudo generar el reporte"}
 
+        # ========================================================================
+        # NUEVO SISTEMA DE INGESTA DIRIGIDA
+        # ========================================================================
+        if use_new_ingestion:
+            print(f"🚀 Usando NUEVO sistema de Ingesta Dirigida para '{q}'")
+
+            # Importar servicios del nuevo sistema
+            from app.services.ingestion_service import run_ingestion
+            from app.services.analysis_engine import process_new_data, get_campaign_summary
+
+            # Paso 1: Ejecutar ingesta (scraping → raw_scrape_data)
+            print(f"📥 Paso 1: Ejecutando ingesta para campaña {campaign.id}...")
+            ingestion_result = await run_ingestion(
+                db=db,
+                campaign_id=campaign.id,
+                max_posts=50,
+                days_back=7,
+            )
+
+            # Paso 2: Procesar datos (filtrado + análisis IA → campaign_analyses)
+            print(f"🔬 Paso 2: Procesando y analizando datos...")
+            analysis_result = await process_new_data(
+                db=db,
+                limit=100,
+                campaign_id=campaign.id,
+            )
+
+            # Paso 3: Obtener resumen de la campaña desde campaign_analyses
+            print(f"📊 Paso 3: Generando resumen...")
+            summary_data = await get_campaign_summary(
+                db=db,
+                campaign_id=campaign.id,
+                days_back=7,
+            )
+
+            # Construir reporte final
+            generation_time = time.time() - start_time
+
+            weekly_report_data = {
+                "resumen_ejecutivo": summary_data.get("executive_summary", f"Análisis semanal de {q}"),
+                "analisis_estrategico": summary_data.get("strategic_analysis", ""),
+                "recomendaciones": summary_data.get("recommendations", []),
+                "log_de_evidencia": summary_data.get("evidence_log", []),
+                "metricas": {
+                    "total_menciones": summary_data.get("total_posts", 0),
+                    "posts_analizados": analysis_result.get("posts_analyzed", 0),
+                    "posts_relevantes": analysis_result.get("posts_relevant", 0),
+                    "sentimiento": summary_data.get("sentiment_distribution", {}),
+                    "riesgo": summary_data.get("risk_distribution", {}),
+                    "engagement": summary_data.get("total_engagement", {}),
+                },
+                "temas_principales": summary_data.get("top_topics", []),
+                "periodo": {
+                    "inicio": (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d"),
+                    "fin": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                },
+                "_ingestion_stats": {
+                    "raw_posts_scraped": ingestion_result.get("total_posts_found", 0),
+                    "raw_posts_stored": ingestion_result.get("total_posts_stored", 0),
+                    "sources_processed": ingestion_result.get("sources_processed", 0),
+                    "elapsed_seconds": ingestion_result.get("elapsed_seconds", 0),
+                }
+            }
+
+            # Guardar reporte en BD
+            new_report = ActorReport(
+                actorName=q,
+                reportType=ReportType.WEEKLY,
+                reportData=weekly_report_data,
+                summary=str(weekly_report_data.get("resumen_ejecutivo", ""))[:500],
+                generationTime=generation_time,
+                itemCount=summary_data.get("total_posts", 0)
+            )
+            db.add(new_report)
+            await db.commit()
+            await db.refresh(new_report)
+
+            print(f"✅ Reporte con Ingesta Dirigida completado en {generation_time:.2f}s")
+
+            return {
+                **weekly_report_data,
+                "_metadata": {
+                    "from_cache": False,
+                    "generated_at": new_report.createdAt.isoformat(),
+                    "report_id": new_report.id,
+                    "generation_time": round(generation_time, 2),
+                    "campaign_id": campaign.id,
+                    "source": "ingesta_dirigida",
+                    "system": "new_ingestion_v2"
+                }
+            }
+
+        # ========================================================================
+        # SISTEMA LEGACY (cuando use_new_ingestion=False)
+        # ========================================================================
+
         # 2. Buscar reporte reciente en cache (< 6 horas)
         if not force_refresh:
             cache_query = select(ActorReport).where(
@@ -450,7 +552,7 @@ async def get_weekly_report(
                 }
 
         # 3. Recopilar datos locales
-        print(f"🔄 Generando reporte semanal para '{q}' (campaña: {campaign.id})")
+        print(f"🔄 Generando reporte semanal para '{q}' (campaña: {campaign.id}) [LEGACY]")
 
         now = datetime.now(timezone.utc)
         week_ago = now - timedelta(days=7)
@@ -862,6 +964,7 @@ async def get_weekly_report(
 async def get_daily_summary(
     q: str = Query(..., description="Nombre del actor político o query de campaña"),
     force_refresh: bool = Query(False, description="Forzar regeneración aunque exista cache"),
+    use_new_ingestion: bool = Query(True, description="Usar nuevo sistema de Ingesta Dirigida"),
     db: AsyncSession = Depends(get_session)
 ):
     """
@@ -869,6 +972,11 @@ async def get_daily_summary(
     1. Recopila datos de las últimas 24 horas de MonitoringSources e IngestedItems
     2. Envía los datos a Perplexity para análisis
     3. Combina métricas locales con análisis de IA
+
+    NUEVO: Si use_new_ingestion=True, usa el sistema de Ingesta Dirigida:
+    - Ejecuta scraping con Apify → raw_scrape_data
+    - Filtra por keywords → campaign_analyses
+    - Analiza con SOCMINT IA
     """
     try:
         start_time = time.time()
@@ -897,6 +1005,102 @@ async def get_daily_summary(
                 }
             return {"error": "No se pudo generar el resumen"}
 
+        # ========================================================================
+        # NUEVO SISTEMA DE INGESTA DIRIGIDA
+        # ========================================================================
+        if use_new_ingestion:
+            print(f"🚀 Usando NUEVO sistema de Ingesta Dirigida para resumen diario '{q}'")
+
+            # Importar servicios del nuevo sistema
+            from app.services.ingestion_service import run_ingestion
+            from app.services.analysis_engine import process_new_data, get_campaign_summary
+
+            # Paso 1: Ejecutar ingesta (scraping → raw_scrape_data) - solo último día
+            print(f"📥 Paso 1: Ejecutando ingesta para campaña {campaign.id}...")
+            ingestion_result = await run_ingestion(
+                db=db,
+                campaign_id=campaign.id,
+                max_posts=30,  # Menos posts para reporte diario
+                days_back=1,   # Solo último día
+            )
+
+            # Paso 2: Procesar datos (filtrado + análisis IA → campaign_analyses)
+            print(f"🔬 Paso 2: Procesando y analizando datos...")
+            analysis_result = await process_new_data(
+                db=db,
+                limit=50,
+                campaign_id=campaign.id,
+            )
+
+            # Paso 3: Obtener resumen de la campaña desde campaign_analyses
+            print(f"📊 Paso 3: Generando resumen diario...")
+            summary_data = await get_campaign_summary(
+                db=db,
+                campaign_id=campaign.id,
+                days_back=1,  # Solo último día
+            )
+
+            # Construir reporte final
+            generation_time = time.time() - start_time
+
+            daily_summary_data = {
+                "resumen_diario_express": summary_data.get("executive_summary", f"Resumen diario de {q}"),
+                "analisis_del_dia": summary_data.get("strategic_analysis", ""),
+                "recomendaciones": summary_data.get("recommendations", []),
+                "registro_de_evidencia": summary_data.get("evidence_log", []),
+                "metricas": {
+                    "total_menciones": summary_data.get("total_posts", 0),
+                    "posts_analizados": analysis_result.get("posts_analyzed", 0),
+                    "posts_relevantes": analysis_result.get("posts_relevant", 0),
+                    "sentimiento": summary_data.get("sentiment_distribution", {}),
+                    "sentimiento_predominante": summary_data.get("predominant_sentiment", "neutral"),
+                    "engagement": summary_data.get("total_engagement", {}),
+                },
+                "temas_del_dia": summary_data.get("top_topics", []),
+                "periodo": {
+                    "inicio": (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M"),
+                    "fin": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
+                },
+                "_ingestion_stats": {
+                    "raw_posts_scraped": ingestion_result.get("total_posts_found", 0),
+                    "raw_posts_stored": ingestion_result.get("total_posts_stored", 0),
+                    "sources_processed": ingestion_result.get("sources_processed", 0),
+                    "elapsed_seconds": ingestion_result.get("elapsed_seconds", 0),
+                }
+            }
+
+            # Guardar reporte en BD
+            new_report = ActorReport(
+                actorName=q,
+                reportType=ReportType.DAILY,
+                reportData=daily_summary_data,
+                summary=str(daily_summary_data.get("resumen_diario_express", ""))[:500],
+                generationTime=generation_time,
+                itemCount=summary_data.get("total_posts", 0)
+            )
+            db.add(new_report)
+            await db.commit()
+            await db.refresh(new_report)
+
+            print(f"✅ Resumen diario con Ingesta Dirigida completado en {generation_time:.2f}s")
+
+            return {
+                **daily_summary_data,
+                "_metadata": {
+                    "from_cache": False,
+                    "generated_at": new_report.createdAt.isoformat(),
+                    "report_id": new_report.id,
+                    "generation_time": round(generation_time, 2),
+                    "campaign_id": campaign.id,
+                    "source": "ingesta_dirigida",
+                    "system": "new_ingestion_v2"
+                }
+            }
+
+        # ========================================================================
+        # SISTEMA LEGACY (cuando use_new_ingestion=False)
+        # ========================================================================
+
         # 2. Buscar reporte reciente en cache (< 3 horas)
         if not force_refresh:
             cache_query = select(ActorReport).where(
@@ -920,7 +1124,7 @@ async def get_daily_summary(
                 }
 
         # 3. Recopilar datos de las últimas 24 horas
-        print(f"🔄 Generando resumen diario para '{q}' (campaña: {campaign.id})")
+        print(f"🔄 Generando resumen diario para '{q}' (campaña: {campaign.id}) [LEGACY]")
 
         now = datetime.now(timezone.utc)
         yesterday = now - timedelta(hours=24)
