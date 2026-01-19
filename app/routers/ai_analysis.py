@@ -183,6 +183,7 @@ async def test_scraping(
     campaign_id: str = Query(..., description="ID de la campaña para probar el scraping"),
     max_articles: int = Query(5, ge=1, le=20, description="Máximo de artículos por fuente"),
     days_back: int = Query(7, ge=1, le=30, description="Días hacia atrás para buscar"),
+    filter_by_actor: bool = Query(True, description="Si True, solo muestra posts que mencionen al actor. Si False, muestra TODOS los posts (útil si la página es del propio candidato)"),
     db: AsyncSession = Depends(get_session)
 ):
     """
@@ -195,6 +196,10 @@ async def test_scraping(
     - Si Apify está funcionando correctamente
     - Si las fuentes configuradas encuentran contenido del candidato
     - Qué artículos/posts está encontrando el sistema
+
+    Parámetros:
+    - filter_by_actor=true: Solo muestra posts que mencionen al candidato (default)
+    - filter_by_actor=false: Muestra TODOS los posts (útil si la página ES del candidato)
     """
     import time
     start_time = time.time()
@@ -288,7 +293,8 @@ async def test_scraping(
                     page_url=source["url"],
                     candidate_name=actor_name,
                     max_posts=max_articles,
-                    days_back=days_back
+                    days_back=days_back,
+                    filter_by_candidate=filter_by_actor
                 )
             elif platform in ("twitter", "x"):
                 articles = await scrape_twitter_account(

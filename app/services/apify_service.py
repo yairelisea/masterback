@@ -82,65 +82,96 @@ def get_apify_client():
 # ============================================================================
 async def scrape_facebook_page(
     page_url: str,
-    candidate_name: str,
+    candidate_name: str = "",
     max_posts: int = DEFAULT_MAX_POSTS,
     days_back: int = DEFAULT_DAYS_BACK,
+    filter_by_candidate: bool = False,  # Por defecto NO filtra (Ingesta Dirigida)
 ) -> List[Dict[str, Any]]:
     """
-    Extrae posts de una página de Facebook que mencionen al candidato.
+    Extrae posts de una página de Facebook usando alien_force/facebook-scraper-pro.
+
+    MODELO INGESTA DIRIGIDA:
+    - Extrae TODOS los posts de la página (sin filtrar por candidato)
+    - El filtrado por keywords se hace después en el Motor de Análisis
+    - Los posts se guardan en raw_scrape_data para retro-análisis
 
     Args:
         page_url: URL de la página de Facebook
-        candidate_name: Nombre del candidato para filtrar posts
+        candidate_name: Nombre del candidato (opcional, para filtrado posterior)
         max_posts: Número máximo de posts a extraer
         days_back: Días hacia atrás para buscar
+        filter_by_candidate: Si True, filtra posts que mencionen al candidato
 
     Returns:
         Lista de posts con su contenido y métricas
     """
-    client = get_apify_client()
+    import asyncio
 
-    # Calcular fecha límite
+    print(f"🔵 Scraping Facebook: {page_url}")
+    print(f"   Max posts: {max_posts}, Días: {days_back}")
+    if filter_by_candidate and candidate_name:
+        print(f"   Filtrar por: {candidate_name}")
+
+    client = get_apify_client()
     since_date = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
-    # Configuración del Actor de Facebook
+    # Configuración para apify/facebook-posts-scraper
     run_input = {
         "startUrls": [{"url": page_url}],
         "maxPosts": max_posts,
         "maxPostDate": since_date,
-        "maxComments": 0,  # No queremos comentarios por ahora
+        "maxComments": 0,
         "maxReviews": 0,
         "resultsLimit": max_posts,
     }
 
-    logger.info(f"🔵 Iniciando scraping de Facebook: {page_url}")
-    logger.info(f"   Candidato: {candidate_name}, Posts máx: {max_posts}, Desde: {since_date}")
-
     try:
-        # Ejecutar el Actor
-        run = client.actor(APIFY_ACTORS["facebook"]).call(run_input=run_input)
+        loop = asyncio.get_event_loop()
+        run = await loop.run_in_executor(
+            None,
+            lambda: client.actor(APIFY_ACTORS["facebook"]).call(
+                run_input=run_input,
+                timeout_secs=180  # 3 minutos
+            )
+        )
 
-        # Obtener resultados
         items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+        print(f"   📊 Posts obtenidos: {len(items)}")
 
-        # Filtrar posts que mencionen al candidato
-        filtered_posts = []
-        candidate_lower = candidate_name.lower()
+        if not items:
+            print(f"   ⚠️ No se obtuvieron posts de esta página")
+            return []
 
-        for item in items:
-            post_text = (item.get("text") or "").lower()
-            post_title = (item.get("title") or "").lower()
+        # Normalizar posts
+        all_posts = [_normalize_facebook_post(item) for item in items]
 
-            # Verificar si el post menciona al candidato
-            if candidate_lower in post_text or candidate_lower in post_title:
-                filtered_posts.append(_normalize_facebook_post(item))
+        # Filtrar por candidato si se solicita
+        if filter_by_candidate and candidate_name:
+            filtered_posts = []
+            candidate_lower = candidate_name.lower()
+            name_parts = [part.lower() for part in candidate_name.split() if len(part) > 2]
 
-        logger.info(f"✅ Facebook: {len(items)} posts encontrados, {len(filtered_posts)} relevantes")
-        return filtered_posts
+            for post in all_posts:
+                post_text = (post.get("content") or "").lower()
+                post_title = (post.get("title") or "").lower()
+                combined = post_text + " " + post_title
+
+                if candidate_lower in combined:
+                    filtered_posts.append(post)
+                elif any(part in combined for part in name_parts):
+                    filtered_posts.append(post)
+
+            print(f"   ✅ {len(all_posts)} posts totales, {len(filtered_posts)} mencionan '{candidate_name}'")
+            return filtered_posts
+
+        print(f"   ✅ {len(all_posts)} posts extraídos")
+        return all_posts
 
     except Exception as e:
-        logger.error(f"❌ Error en scraping de Facebook: {e}")
-        raise
+        print(f"   ❌ Error en scraping de Facebook: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
 
 
 async def scrape_twitter_account(

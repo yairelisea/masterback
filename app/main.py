@@ -16,7 +16,7 @@ from .db import engine
 from .scheduler import start_scheduler
 
 # Routers (ajusta si alguno no existe en tu proyecto)
-from .routers import campaigns, sources, ingest, analyses, news, ai_analysis, auth, admin_tools, url_analyzer, monitoring
+from .routers import campaigns, sources, ingest, analyses, news, ai_analysis, auth, admin_tools, url_analyzer, monitoring, ingestion
 
 
 # ---------- Operation IDs únicos (evita warnings en /docs) ----------
@@ -95,6 +95,8 @@ app.include_router(items.router)
 app.include_router(url_analyzer.router)
 # Social Monitoring (solo para admins)
 app.include_router(monitoring.router)
+# Sistema de Ingesta Dirigida
+app.include_router(ingestion.router)
 
 # ---------- Startup: crea tablas e índices si no existen ----------
 @app.on_event("startup")
@@ -137,6 +139,50 @@ async def on_startup():
         )
         await conn.exec_driver_sql(
             'CREATE INDEX IF NOT EXISTS ix_actor_reports_createdat ON actor_reports ("createdAt")'
+        )
+
+        # ============================================================
+        # ÍNDICES PARA NUEVO MODELO DE INGESTA DIRIGIDA
+        # ============================================================
+
+        # Índices para raw_scrape_data ("El Gran Contenedor")
+        await conn.exec_driver_sql(
+            'CREATE INDEX IF NOT EXISTS ix_raw_scrape_source ON raw_scrape_data ("sourceId")'
+        )
+        await conn.exec_driver_sql(
+            'CREATE INDEX IF NOT EXISTS ix_raw_scrape_processed ON raw_scrape_data ("isProcessed")'
+        )
+        await conn.exec_driver_sql(
+            'CREATE INDEX IF NOT EXISTS ix_raw_scrape_created ON raw_scrape_data ("createdAt")'
+        )
+        await conn.exec_driver_sql(
+            'CREATE INDEX IF NOT EXISTS ix_raw_scrape_platform ON raw_scrape_data (platform)'
+        )
+        # Índice para búsqueda full-text en rawText (retro-análisis)
+        await conn.exec_driver_sql(
+            '''CREATE INDEX IF NOT EXISTS ix_raw_scrape_rawtext_gin
+               ON raw_scrape_data USING gin(to_tsvector('spanish', COALESCE("rawText", '')))'''
+        )
+
+        # Índices para campaign_analyses (resultados finales)
+        await conn.exec_driver_sql(
+            'CREATE INDEX IF NOT EXISTS ix_campaign_analysis_raw ON campaign_analyses ("rawId")'
+        )
+        await conn.exec_driver_sql(
+            'CREATE INDEX IF NOT EXISTS ix_campaign_analysis_campaign ON campaign_analyses ("campaignId")'
+        )
+        await conn.exec_driver_sql(
+            'CREATE INDEX IF NOT EXISTS ix_campaign_analysis_risk ON campaign_analyses ("riskLevel")'
+        )
+        await conn.exec_driver_sql(
+            'CREATE INDEX IF NOT EXISTS ix_campaign_analysis_category ON campaign_analyses (category)'
+        )
+        await conn.exec_driver_sql(
+            'CREATE INDEX IF NOT EXISTS ix_campaign_analysis_analyzed ON campaign_analyses ("analyzedAt")'
+        )
+        # Unique constraint: un post solo puede analizarse una vez por campaña
+        await conn.exec_driver_sql(
+            'CREATE UNIQUE INDEX IF NOT EXISTS uq_campaign_analysis_raw_campaign ON campaign_analyses ("rawId", "campaignId")'
         )
 
     # Agregar valor 'news_site' al enum socialplatform si no existe

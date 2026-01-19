@@ -20,13 +20,14 @@ engine = create_async_engine(DATABASE_URL, echo=False, future=True)
 # ✅ usa async_sessionmaker
 SessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False, class_=AsyncSession)
 
+# Alias para background tasks que necesitan crear sesiones independientes
+async_session_maker = SessionLocal
+
 # Dependencia para FastAPI
 async def get_session() -> AsyncSession:
     async with SessionLocal() as session:
         yield session
 
-# 👇👇👇 AÑADE ESTAS 3 LÍNEAS 👇👇👇
 # Alias compat para routers que importan get_db
 get_db = get_session
-__all__ = ["engine", "SessionLocal", "get_session", "get_db"]
-# 👆👆👆
+__all__ = ["engine", "SessionLocal", "get_session", "get_db", "async_session_maker"]

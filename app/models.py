@@ -579,3 +579,193 @@ class ApifyRun(Base):
 
     # Relaciones
     campaign = relationship("Campaign", backref="apify_runs")
+
+
+# ============================================================================
+# NUEVO MODELO DE INGESTA DIRIGIDA CON HISTÓRICO
+# ============================================================================
+
+# ------------------------
+# RawScrapeData - "El Gran Contenedor" de datos crudos
+# ------------------------
+class RawScrapeData(Base):
+    """
+    Almacena TODO el contenido crudo de las fuentes de monitoreo.
+    Este es el "data lake" donde se vacía todo lo que Apify recolecta.
+
+    Características:
+    - Nunca se elimina (histórico permanente)
+    - Permite retro-análisis cuando se crean nuevas campañas
+    - URL del post como clave única para evitar duplicados
+    """
+    __tablename__ = "raw_scrape_data"
+
+    id: Mapped[str] = mapped_column(
+        String(40),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4())
+    )
+
+    # Relación con la fuente de monitoreo
+    sourceId: Mapped[str] = mapped_column(
+        String(40),
+        ForeignKey("monitoring_sources.id"),
+        index=True,
+        nullable=False
+    )
+
+    # URL única del post (clave para evitar duplicados)
+    postUrl: Mapped[str] = mapped_column(Text, nullable=False, unique=True, index=True)
+
+    # Contenido crudo del post
+    rawText: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Fecha original del post
+    postDate: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Autor del post
+    postAuthor: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+    # Metadata JSON con todos los datos adicionales de Apify
+    metadataJson: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    # Métricas de engagement (para ordenamiento/priorización)
+    likes: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    shares: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    comments: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    views: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+
+    # Plataforma de origen
+    platform: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    # Flags de procesamiento
+    isProcessed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+
+    # Timestamp de ingesta
+    createdAt: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=datetime.utcnow,
+        index=True
+    )
+
+    # Relaciones
+    source = relationship("MonitoringSource", backref="raw_scrape_data")
+    campaign_analyses = relationship("CampaignAnalysis", back_populates="raw_data", cascade="all, delete-orphan")
+
+
+# ------------------------
+# CampaignAnalysis - Resultados finales del análisis SOCMINT
+# ------------------------
+class AnalysisCategory(str, enum.Enum):
+    """Categorías de análisis político"""
+    SEGURIDAD = "seguridad"
+    ECONOMIA = "economia"
+    ATAQUE = "ataque"
+    GESTION = "gestion"
+    CORRUPCION = "corrupcion"
+    OTROS = "otros"
+
+
+class AnalysisRiskLevel(str, enum.Enum):
+    """Nivel de riesgo del contenido"""
+    BAJO = "bajo"
+    MEDIO = "medio"
+    ALTO = "alto"
+    CRITICO = "critico"
+
+
+class AnalysisIntent(str, enum.Enum):
+    """Intención detectada del contenido"""
+    INFORMAR = "informar"
+    MOVILIZAR = "movilizar"
+    DIFAMAR = "difamar"
+
+
+class CampaignAnalysis(Base):
+    """
+    Tabla final de resultados de análisis por campaña.
+    Cada registro es un post analizado con IA para una campaña específica.
+
+    Un mismo RawScrapeData puede tener múltiples CampaignAnalysis si
+    es relevante para varias campañas (varios candidatos mencionados).
+    """
+    __tablename__ = "campaign_analyses"
+
+    id: Mapped[str] = mapped_column(
+        String(40),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4())
+    )
+
+    # Relación con el dato crudo original
+    rawId: Mapped[str] = mapped_column(
+        String(40),
+        ForeignKey("raw_scrape_data.id"),
+        index=True,
+        nullable=False
+    )
+
+    # Relación con la campaña
+    campaignId: Mapped[str] = mapped_column(
+        String(40),
+        ForeignKey("campaigns.id"),
+        index=True,
+        nullable=False
+    )
+
+    # ========== Resultados del análisis SOCMINT ==========
+
+    # Sentimiento (-1.0 a 1.0)
+    sentimentScore: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # Categoría del contenido
+    category: Mapped[AnalysisCategory | None] = mapped_column(
+        Enum(AnalysisCategory),
+        nullable=True
+    )
+
+    # Nivel de riesgo
+    riskLevel: Mapped[AnalysisRiskLevel | None] = mapped_column(
+        Enum(AnalysisRiskLevel),
+        nullable=True
+    )
+
+    # Resumen (máximo 15 palabras según prompt SOCMINT)
+    summary: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    # Intención detectada
+    intent: Mapped[AnalysisIntent | None] = mapped_column(
+        Enum(AnalysisIntent),
+        nullable=True
+    )
+
+    # ========== Metadata del análisis ==========
+
+    # Palabras clave que activaron el análisis
+    matchedKeywords: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+
+    # Respuesta cruda de la IA (para debugging)
+    rawAIResponse: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+    # Modelo/servicio usado para el análisis
+    analysisModel: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    # Flag para evitar re-análisis (ahorro de costos)
+    isAnalyzed: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+
+    # Timestamp de análisis
+    analyzedAt: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=datetime.utcnow,
+        index=True
+    )
+
+    # Relaciones
+    raw_data = relationship("RawScrapeData", back_populates="campaign_analyses")
+    campaign = relationship("Campaign", backref="campaign_analyses")
+
+    # Constraint: Un post solo puede ser analizado una vez por campaña
+    __table_args__ = (
+        # Index compuesto para búsquedas rápidas
+        # UniqueConstraint se manejará en main.py con IF NOT EXISTS
+    )
