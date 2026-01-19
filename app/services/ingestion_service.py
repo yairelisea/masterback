@@ -15,7 +15,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple
-from sqlalchemy import select, and_, or_, func
+from sqlalchemy import select, and_, or_, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert
 
@@ -251,13 +251,14 @@ class IngestionService:
                     }
                 )
                 await self.db.execute(stmt)
+                # Commit después de cada item para evitar deadlocks
+                await self.db.commit()
                 stats["inserted"] += 1
 
             except Exception as e:
                 print(f"   ⚠️ Error insertando post {post_url[:50]}: {e}")
+                await self.db.rollback()
                 stats["skipped"] += 1
-
-        await self.db.commit()
         print(f"   📊 Almacenamiento: {stats['inserted']} nuevos, {stats['skipped']} omitidos")
         return stats
 
@@ -383,12 +384,22 @@ class IngestionService:
                             )
                             platform_result["posts_stored"] += stats["inserted"]
 
-                            # Actualizar lastRunAt de la fuente
+                            # Actualizar lastRunAt de la fuente usando UPDATE directo
                             await self.db.execute(
-                                select(MonitoringSource).where(
-                                    MonitoringSource.id == source["id"]
-                                )
+                                text("""
+                                    UPDATE monitoring_sources
+                                    SET "lastRunAt" = :now,
+                                        "lastRunPostsCount" = :count,
+                                        "totalPostsCollected" = "totalPostsCollected" + :count
+                                    WHERE id = :source_id
+                                """),
+                                {
+                                    "now": datetime.now(timezone.utc),
+                                    "count": stats["inserted"],
+                                    "source_id": source["id"]
+                                }
                             )
+                            await self.db.commit()
 
                 else:
                     print(f"   ⚠️ Plataforma {platform} no implementada aún")

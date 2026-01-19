@@ -90,95 +90,112 @@ class AnalysisEngine:
             "by_campaign": {}
         }
 
-        # 1. Obtener datos no procesados
-        query = select(RawScrapeData).where(
-            RawScrapeData.isProcessed == False
-        ).order_by(RawScrapeData.createdAt.desc()).limit(limit)
+        # Usar no_autoflush para evitar deadlocks
+        async with self.db.no_autoflush:
+            # 1. Obtener IDs de datos no procesados (solo IDs para evitar locks)
+            query = select(RawScrapeData.id).where(
+                RawScrapeData.isProcessed == False
+            ).order_by(RawScrapeData.createdAt.desc()).limit(limit)
 
-        result = await self.db.execute(query)
-        raw_items = result.scalars().all()
+            result = await self.db.execute(query)
+            raw_ids = [row[0] for row in result.fetchall()]
 
-        if not raw_items:
-            print("   ℹ️ No hay datos nuevos para procesar")
-            return stats
+            if not raw_ids:
+                print("   ℹ️ No hay datos nuevos para procesar")
+                return stats
 
-        print(f"   📊 Datos pendientes: {len(raw_items)}")
+            print(f"   📊 Datos pendientes: {len(raw_ids)}")
 
-        # 2. Obtener todas las campañas activas (o solo la especificada)
-        campaigns_query = select(Campaign)
-        if campaign_id:
-            campaigns_query = campaigns_query.where(Campaign.id == campaign_id)
+            # 2. Obtener todas las campañas activas (o solo la especificada)
+            campaigns_query = select(Campaign)
+            if campaign_id:
+                campaigns_query = campaigns_query.where(Campaign.id == campaign_id)
 
-        campaigns_result = await self.db.execute(campaigns_query)
-        campaigns = campaigns_result.scalars().all()
+            campaigns_result = await self.db.execute(campaigns_query)
+            campaigns = campaigns_result.scalars().all()
 
-        print(f"   📋 Campañas activas: {len(campaigns)}")
+            print(f"   📋 Campañas activas: {len(campaigns)}")
 
-        # 3. Para cada dato, buscar coincidencias con palabras clave de campañas
-        for raw_item in raw_items:
-            stats["processed"] += 1
-            text_content = raw_item.rawText or ""
-
-            for campaign in campaigns:
-                # Obtener keywords de la campaña
-                keywords = self._get_campaign_keywords(campaign)
-
-                # Buscar coincidencias
-                matched_keywords = self._find_keyword_matches(text_content, keywords)
-
-                if matched_keywords:
-                    stats["matched"] += 1
-
-                    # Verificar si ya existe análisis para este par (raw_id, campaign_id)
-                    existing = await self.db.execute(
-                        select(CampaignAnalysis).where(
-                            and_(
-                                CampaignAnalysis.rawId == raw_item.id,
-                                CampaignAnalysis.campaignId == campaign.id
-                            )
-                        )
-                    )
-
-                    if existing.scalar_one_or_none():
-                        # Ya existe, saltar
+            # 3. Procesar cada item individualmente para evitar deadlocks
+            for raw_id in raw_ids:
+                try:
+                    # Obtener el item fresco
+                    raw_item = await self.db.get(RawScrapeData, raw_id)
+                    if not raw_item or raw_item.isProcessed:
                         continue
 
-                    # Enviar a análisis de IA
-                    try:
-                        analysis_result = await self._analyze_with_ai(text_content)
+                    stats["processed"] += 1
+                    text_content = raw_item.rawText or ""
 
-                        # Guardar resultado
-                        new_analysis = CampaignAnalysis(
-                            rawId=raw_item.id,
-                            campaignId=campaign.id,
-                            sentimentScore=analysis_result.get("sentiment"),
-                            category=self._map_category(analysis_result.get("category")),
-                            riskLevel=self._map_risk_level(analysis_result.get("risk_level")),
-                            summary=analysis_result.get("summary"),
-                            intent=self._map_intent(analysis_result.get("intent")),
-                            matchedKeywords=matched_keywords,
-                            rawAIResponse=analysis_result,
-                            analysisModel="perplexity",
-                            isAnalyzed=True,
-                            analyzedAt=datetime.now(timezone.utc)
-                        )
+                    for campaign in campaigns:
+                        # Obtener keywords de la campaña
+                        keywords = self._get_campaign_keywords(campaign)
 
-                        self.db.add(new_analysis)
-                        stats["analyzed"] += 1
+                        # Buscar coincidencias
+                        matched_keywords = self._find_keyword_matches(text_content, keywords)
 
-                        # Tracking por campaña
-                        if campaign.id not in stats["by_campaign"]:
-                            stats["by_campaign"][campaign.id] = {"name": campaign.name, "count": 0}
-                        stats["by_campaign"][campaign.id]["count"] += 1
+                        if matched_keywords:
+                            stats["matched"] += 1
 
-                    except Exception as e:
-                        print(f"   ⚠️ Error analizando: {e}")
-                        stats["errors"] += 1
+                            # Verificar si ya existe análisis para este par (raw_id, campaign_id)
+                            existing = await self.db.execute(
+                                select(CampaignAnalysis.id).where(
+                                    and_(
+                                        CampaignAnalysis.rawId == raw_item.id,
+                                        CampaignAnalysis.campaignId == campaign.id
+                                    )
+                                )
+                            )
 
-            # Marcar como procesado
-            raw_item.isProcessed = True
+                            if existing.scalar_one_or_none():
+                                # Ya existe, saltar
+                                continue
 
-        await self.db.commit()
+                            # Enviar a análisis de IA
+                            try:
+                                analysis_result = await self._analyze_with_ai(text_content)
+
+                                # Guardar resultado
+                                new_analysis = CampaignAnalysis(
+                                    rawId=raw_item.id,
+                                    campaignId=campaign.id,
+                                    sentimentScore=analysis_result.get("sentiment"),
+                                    category=self._map_category(analysis_result.get("category")),
+                                    riskLevel=self._map_risk_level(analysis_result.get("risk_level")),
+                                    summary=analysis_result.get("summary"),
+                                    intent=self._map_intent(analysis_result.get("intent")),
+                                    matchedKeywords=matched_keywords,
+                                    rawAIResponse=analysis_result,
+                                    analysisModel="perplexity",
+                                    isAnalyzed=True,
+                                    analyzedAt=datetime.now(timezone.utc)
+                                )
+
+                                self.db.add(new_analysis)
+                                stats["analyzed"] += 1
+
+                                # Tracking por campaña
+                                if campaign.id not in stats["by_campaign"]:
+                                    stats["by_campaign"][campaign.id] = {"name": campaign.name, "count": 0}
+                                stats["by_campaign"][campaign.id]["count"] += 1
+
+                            except Exception as e:
+                                print(f"   ⚠️ Error analizando: {e}")
+                                stats["errors"] += 1
+
+                    # Marcar como procesado usando UPDATE directo para evitar conflictos
+                    await self.db.execute(
+                        text("UPDATE raw_scrape_data SET \"isProcessed\" = true WHERE id = :id"),
+                        {"id": raw_id}
+                    )
+
+                    # Commit después de cada item para liberar locks
+                    await self.db.commit()
+
+                except Exception as e:
+                    print(f"   ⚠️ Error procesando item {raw_id}: {e}")
+                    stats["errors"] += 1
+                    await self.db.rollback()
 
         print(f"\n   ✅ Procesamiento completado:")
         print(f"      - Procesados: {stats['processed']}")
