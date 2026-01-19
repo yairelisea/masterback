@@ -273,9 +273,13 @@ async def run_monitoring_pipeline(
 ):
     """
     Ejecuta el pipeline de monitoreo para una campaña.
-    1. Scraping con Apify
-    2. Análisis con Perplexity
-    3. Guardado en BD
+
+    NUEVO FLUJO (Ingesta Dirigida):
+    1. Scraping con Apify (apify/facebook-posts-scraper)
+    2. Almacena en raw_scrape_data
+    3. Filtra por keywords de la campaña
+    4. Análisis SOCMINT con IA
+    5. Guarda en campaign_analyses
 
     El proceso se ejecuta en background y retorna inmediatamente.
     """
@@ -302,15 +306,31 @@ async def run_monitoring_pipeline(
             detail="No active monitoring sources for this campaign"
         )
 
-    # Ejecutar pipeline (síncrono por ahora, se puede mover a background)
-    result = await run_campaign_monitoring_pipeline(
-        campaign_id=campaign_id,
+    # NUEVO: Usar el sistema de Ingesta Dirigida
+    from app.services.ingestion_service import run_ingestion
+    from app.services.analysis_engine import process_new_data
+
+    # Paso 1: Ejecutar ingesta (scraping y almacenamiento en raw_scrape_data)
+    ingestion_result = await run_ingestion(
         db=db,
+        campaign_id=campaign_id,
+        max_posts=request.max_posts_per_source,
         days_back=request.days_back,
-        max_posts_per_source=request.max_posts_per_source,
     )
 
-    return result
+    # Paso 2: Procesar datos nuevos (filtrado + análisis IA)
+    analysis_result = await process_new_data(
+        db=db,
+        limit=request.max_posts_per_source * len(sources),
+        campaign_id=campaign_id,
+    )
+
+    return {
+        "status": "completed",
+        "campaign_id": campaign_id,
+        "ingestion": ingestion_result,
+        "analysis": analysis_result,
+    }
 
 
 @router.get("/campaigns/{campaign_id}/summary", response_model=CampaignAnalysisSummary)
