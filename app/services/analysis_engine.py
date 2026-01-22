@@ -654,7 +654,7 @@ async def get_campaign_summary(
 
     query = (
         select(CampaignAnalysis)
-        .options(selectinload(CampaignAnalysis.rawData))  # JOIN con raw_scrape_data
+        .options(selectinload(CampaignAnalysis.raw_data))  # JOIN con raw_scrape_data
         .where(
             and_(
                 CampaignAnalysis.campaignId == campaign_id,
@@ -722,7 +722,7 @@ async def get_campaign_summary(
             all_keywords.extend(analysis.matchedKeywords)
 
         # Evidencia - mostrar claramente TEMA y POSTURA (a favor/en contra)
-        raw = analysis.rawData  # El post original de raw_scrape_data
+        raw = analysis.raw_data  # El post original de raw_scrape_data
         post_extract = None
         if raw and raw.rawText:
             post_extract = raw.rawText[:300] + "..." if len(raw.rawText) > 300 else raw.rawText
