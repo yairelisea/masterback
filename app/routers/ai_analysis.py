@@ -491,12 +491,13 @@ async def get_weekly_report(
                 )
                 ingestion_result["skipped"] = False
 
-                # Paso 2: Procesar datos nuevos
+                # Paso 2: Procesar datos nuevos Y re-analizar incompletos
                 print(f"🔬 Paso 2: Procesando y analizando datos...")
                 analysis_result = await process_new_data(
                     db=db,
                     limit=100,
                     campaign_id=campaign.id,
+                    reanalyze_incomplete=True,  # Re-analizar los que tienen datos vacíos
                 )
                 analysis_result["skipped"] = False
             else:
@@ -1083,12 +1084,13 @@ async def get_daily_summary(
                 )
                 ingestion_result["skipped"] = False
 
-                # Paso 2: Procesar datos nuevos
+                # Paso 2: Procesar datos nuevos Y re-analizar incompletos
                 print(f"🔬 Paso 2: Procesando y analizando datos...")
                 analysis_result = await process_new_data(
                     db=db,
                     limit=50,
                     campaign_id=campaign.id,
+                    reanalyze_incomplete=True,  # Re-analizar los que tienen datos vacíos
                 )
                 analysis_result["skipped"] = False
             else:

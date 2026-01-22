@@ -62,7 +62,8 @@ class AnalysisEngine:
     async def process_new_scrapes(
         self,
         limit: int = 100,
-        campaign_id: Optional[str] = None
+        campaign_id: Optional[str] = None,
+        reanalyze_incomplete: bool = False
     ) -> Dict[str, Any]:
         """
         Procesa datos nuevos en RawScrapeData que aún no han sido analizados.
@@ -72,6 +73,7 @@ class AnalysisEngine:
         Args:
             limit: Máximo de registros a procesar
             campaign_id: Si se especifica, solo procesa para esa campaña
+            reanalyze_incomplete: Si True, también re-analiza datos con análisis incompletos
 
         Returns:
             Estadísticas del procesamiento
@@ -80,31 +82,53 @@ class AnalysisEngine:
 
         print(f"\n{'='*60}")
         print(f"🔄 MOMENTO A: Procesando nuevos scrapes")
+        if reanalyze_incomplete:
+            print(f"   📝 Modo: Re-analizando registros con análisis incompletos")
         print(f"{'='*60}")
 
         stats = {
             "processed": 0,
             "matched": 0,
             "analyzed": 0,
+            "reanalyzed": 0,
             "errors": 0,
             "by_campaign": {}
         }
 
         # Usar no_autoflush para evitar deadlocks (es sync, no async)
         with self.db.no_autoflush:
-            # 1. Obtener IDs de datos no procesados (solo IDs para evitar locks)
-            query = select(RawScrapeData.id).where(
-                RawScrapeData.isProcessed == False
-            ).order_by(RawScrapeData.createdAt.desc()).limit(limit)
-
-            result = await self.db.execute(query)
-            raw_ids = [row[0] for row in result.fetchall()]
+            # 1. Obtener IDs de datos a procesar
+            if reanalyze_incomplete and campaign_id:
+                # Buscar análisis incompletos (sin summary) para esta campaña
+                incomplete_query = (
+                    select(CampaignAnalysis.rawId)
+                    .where(
+                        and_(
+                            CampaignAnalysis.campaignId == campaign_id,
+                            or_(
+                                CampaignAnalysis.summary == None,
+                                CampaignAnalysis.summary == "",
+                                CampaignAnalysis.summary == "Sin resumen disponible"
+                            )
+                        )
+                    )
+                    .limit(limit)
+                )
+                result = await self.db.execute(incomplete_query)
+                raw_ids = [row[0] for row in result.fetchall()]
+                print(f"   📊 Análisis incompletos encontrados: {len(raw_ids)}")
+            else:
+                # Modo normal: solo datos no procesados
+                query = select(RawScrapeData.id).where(
+                    RawScrapeData.isProcessed == False
+                ).order_by(RawScrapeData.createdAt.desc()).limit(limit)
+                result = await self.db.execute(query)
+                raw_ids = [row[0] for row in result.fetchall()]
+                print(f"   📊 Datos pendientes: {len(raw_ids)}")
 
             if not raw_ids:
-                print("   ℹ️ No hay datos nuevos para procesar")
+                print("   ℹ️ No hay datos para procesar")
                 return stats
-
-            print(f"   📊 Datos pendientes: {len(raw_ids)}")
 
             # 2. Obtener todas las campañas activas (o solo la especificada)
             campaigns_query = select(Campaign)
@@ -159,8 +183,18 @@ class AnalysisEngine:
                                     analysisModel="perplexity",
                                     isAnalyzed=True,
                                     analyzedAt=datetime.now(timezone.utc)
-                                ).on_conflict_do_nothing(
-                                    index_elements=['rawId', 'campaignId']
+                                ).on_conflict_do_update(
+                                    index_elements=['rawId', 'campaignId'],
+                                    set_={
+                                        'sentimentScore': analysis_result.get("sentiment"),
+                                        'category': self._map_category(analysis_result.get("category")),
+                                        'riskLevel': self._map_risk_level(analysis_result.get("risk_level")),
+                                        'summary': analysis_result.get("summary"),
+                                        'intent': self._map_intent(analysis_result.get("intent")),
+                                        'rawAIResponse': analysis_result,
+                                        'isAnalyzed': True,
+                                        'analyzedAt': datetime.now(timezone.utc)
+                                    }
                                 )
 
                                 result = await self.db.execute(stmt)
@@ -600,11 +634,16 @@ class AnalysisEngine:
 async def process_new_data(
     db: AsyncSession,
     limit: int = 100,
-    campaign_id: Optional[str] = None
+    campaign_id: Optional[str] = None,
+    reanalyze_incomplete: bool = False
 ) -> Dict[str, Any]:
     """Helper para procesar nuevos datos (Momento A)"""
     engine = AnalysisEngine(db)
-    return await engine.process_new_scrapes(limit=limit, campaign_id=campaign_id)
+    return await engine.process_new_scrapes(
+        limit=limit,
+        campaign_id=campaign_id,
+        reanalyze_incomplete=reanalyze_incomplete
+    )
 
 
 async def run_campaign_backfill(
