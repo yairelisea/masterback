@@ -90,8 +90,8 @@ class AnalysisEngine:
             "by_campaign": {}
         }
 
-        # Usar no_autoflush para evitar deadlocks
-        async with self.db.no_autoflush:
+        # Usar no_autoflush para evitar deadlocks (es sync, no async)
+        with self.db.no_autoflush:
             # 1. Obtener IDs de datos no procesados (solo IDs para evitar locks)
             query = select(RawScrapeData.id).where(
                 RawScrapeData.isProcessed == False
@@ -653,9 +653,12 @@ async def get_campaign_summary(
     # Calcular fecha límite
     cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_back)
 
-    # Obtener análisis de la campaña
+    # Obtener análisis de la campaña CON datos del post original
+    from sqlalchemy.orm import selectinload
+
     query = (
         select(CampaignAnalysis)
+        .options(selectinload(CampaignAnalysis.rawData))  # JOIN con raw_scrape_data
         .where(
             and_(
                 CampaignAnalysis.campaignId == campaign_id,
@@ -722,15 +725,32 @@ async def get_campaign_summary(
         if analysis.matchedKeywords:
             all_keywords.extend(analysis.matchedKeywords)
 
-        # Evidencia
+        # Evidencia - mostrar claramente TEMA y POSTURA (a favor/en contra)
+        raw = analysis.rawData  # El post original de raw_scrape_data
+        post_extract = None
+        if raw and raw.rawText:
+            post_extract = raw.rawText[:300] + "..." if len(raw.rawText) > 300 else raw.rawText
+
+        # Determinar postura (a favor / en contra / neutral)
+        score = analysis.sentimentScore or 0
+        if score > 0.2:
+            postura = "A FAVOR"
+        elif score < -0.2:
+            postura = "EN CONTRA"
+        else:
+            postura = "NEUTRAL"
+
+        # Categoría/Tema legible
+        tema = analysis.category.value if analysis.category and hasattr(analysis.category, 'value') else str(analysis.category or "General")
+
         evidence_log.append({
-            "id": analysis.id,
-            "summary": analysis.summary or "Sin resumen",
-            "sentiment_score": analysis.sentimentScore,
-            "risk_level": analysis.riskLevel.value if analysis.riskLevel and hasattr(analysis.riskLevel, 'value') else str(analysis.riskLevel or "bajo"),
-            "category": analysis.category.value if analysis.category and hasattr(analysis.category, 'value') else str(analysis.category or "otros"),
-            "keywords": analysis.matchedKeywords or [],
-            "analyzed_at": analysis.analyzedAt.isoformat() if analysis.analyzedAt else None,
+            "tema": tema,
+            "postura": postura,
+            "resumen": analysis.summary or "Sin resumen",
+            "extracto": post_extract,
+            "url": raw.postUrl if raw else None,
+            "fecha": raw.postDate.strftime("%d/%m/%Y") if raw and raw.postDate else None,
+            "riesgo": analysis.riskLevel.value if analysis.riskLevel and hasattr(analysis.riskLevel, 'value') else str(analysis.riskLevel or "bajo"),
         })
 
     # Calcular top topics por categoría

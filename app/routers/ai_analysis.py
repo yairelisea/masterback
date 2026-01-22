@@ -442,15 +442,62 @@ async def get_weekly_report(
             # Importar servicios del nuevo sistema
             from app.services.ingestion_service import run_ingestion
             from app.services.analysis_engine import process_new_data, get_campaign_summary
+            from app.models import RawScrapeData, MonitoringSource
 
-            # Paso 1: Ejecutar ingesta (scraping → raw_scrape_data)
-            print(f"📥 Paso 1: Ejecutando ingesta para campaña {campaign.id}...")
-            ingestion_result = await run_ingestion(
-                db=db,
-                campaign_id=campaign.id,
-                max_posts=50,
-                days_back=7,
+            # ================================================================
+            # VERIFICACIÓN INTELIGENTE: Solo buscar días faltantes con Apify
+            # ================================================================
+            now = datetime.now(timezone.utc)
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            requested_days_back = 7  # Para reporte semanal
+
+            # Buscar las fuentes de esta campaña
+            sources_query = select(MonitoringSource.id).where(
+                MonitoringSource.campaignId == campaign.id
             )
+            sources_result = await db.execute(sources_query)
+            source_ids = [row[0] for row in sources_result.fetchall()]
+
+            # Calcular días faltantes
+            days_to_fetch = requested_days_back
+            last_scrape_date = None
+
+            if source_ids and not force_refresh:
+                # Buscar la fecha más reciente de datos para esta campaña
+                latest_query = select(func.max(RawScrapeData.createdAt)).where(
+                    RawScrapeData.sourceId.in_(source_ids)
+                )
+                latest_result = await db.execute(latest_query)
+                last_scrape_date = latest_result.scalar()
+
+                if last_scrape_date:
+                    # Calcular cuántos días han pasado desde el último scrape
+                    days_since_last = (now - last_scrape_date).days
+
+                    if days_since_last == 0:
+                        # Ya hay datos de hoy, no necesitamos Apify
+                        days_to_fetch = 0
+                    else:
+                        # Solo buscar los días que faltan
+                        days_to_fetch = min(days_since_last, requested_days_back)
+
+            # Paso 1: Ejecutar ingesta SOLO para los días faltantes
+            ingestion_result = {"total_posts_found": 0, "total_posts_stored": 0, "sources_processed": 0, "elapsed_seconds": 0, "skipped": False}
+
+            if days_to_fetch > 0 or force_refresh:
+                actual_days = requested_days_back if force_refresh else days_to_fetch
+                print(f"📥 Paso 1: Ejecutando ingesta para campaña {campaign.id}")
+                print(f"   📅 Días a buscar: {actual_days} (último dato: {last_scrape_date.strftime('%Y-%m-%d %H:%M') if last_scrape_date else 'ninguno'})")
+                ingestion_result = await run_ingestion(
+                    db=db,
+                    campaign_id=campaign.id,
+                    max_posts=50,
+                    days_back=actual_days,
+                )
+            else:
+                print(f"⏭️ Paso 1: OMITIDO - Datos actualizados (último: {last_scrape_date.strftime('%Y-%m-%d %H:%M') if last_scrape_date else 'N/A'})")
+                ingestion_result["skipped"] = True
+                ingestion_result["reason"] = f"Datos actualizados al {last_scrape_date.strftime('%Y-%m-%d') if last_scrape_date else 'hoy'}"
 
             # Paso 2: Procesar datos (filtrado + análisis IA → campaign_analyses)
             print(f"🔬 Paso 2: Procesando y analizando datos...")
@@ -1014,15 +1061,52 @@ async def get_daily_summary(
             # Importar servicios del nuevo sistema
             from app.services.ingestion_service import run_ingestion
             from app.services.analysis_engine import process_new_data, get_campaign_summary
+            from app.models import RawScrapeData, MonitoringSource
 
-            # Paso 1: Ejecutar ingesta (scraping → raw_scrape_data) - solo último día
-            print(f"📥 Paso 1: Ejecutando ingesta para campaña {campaign.id}...")
-            ingestion_result = await run_ingestion(
-                db=db,
-                campaign_id=campaign.id,
-                max_posts=30,  # Menos posts para reporte diario
-                days_back=1,   # Solo último día
+            # ================================================================
+            # VERIFICACIÓN INTELIGENTE: Solo buscar si no hay datos de hoy
+            # ================================================================
+            now = datetime.now(timezone.utc)
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+            # Buscar las fuentes de esta campaña
+            sources_query = select(MonitoringSource.id).where(
+                MonitoringSource.campaignId == campaign.id
             )
+            sources_result = await db.execute(sources_query)
+            source_ids = [row[0] for row in sources_result.fetchall()]
+
+            # Verificar si hay datos de hoy
+            has_today_data = False
+            last_scrape_date = None
+
+            if source_ids and not force_refresh:
+                # Buscar la fecha más reciente de datos para esta campaña
+                latest_query = select(func.max(RawScrapeData.createdAt)).where(
+                    RawScrapeData.sourceId.in_(source_ids)
+                )
+                latest_result = await db.execute(latest_query)
+                last_scrape_date = latest_result.scalar()
+
+                if last_scrape_date and last_scrape_date >= today_start:
+                    has_today_data = True
+
+            # Paso 1: Ejecutar ingesta SOLO si no hay datos de hoy
+            ingestion_result = {"total_posts_found": 0, "total_posts_stored": 0, "sources_processed": 0, "elapsed_seconds": 0, "skipped": False}
+
+            if not has_today_data or force_refresh:
+                print(f"📥 Paso 1: Ejecutando ingesta diaria para campaña {campaign.id}")
+                print(f"   📅 Último dato: {last_scrape_date.strftime('%Y-%m-%d %H:%M') if last_scrape_date else 'ninguno'}")
+                ingestion_result = await run_ingestion(
+                    db=db,
+                    campaign_id=campaign.id,
+                    max_posts=30,  # Menos posts para reporte diario
+                    days_back=1,   # Solo último día
+                )
+            else:
+                print(f"⏭️ Paso 1: OMITIDO - Ya hay datos de hoy (último: {last_scrape_date.strftime('%Y-%m-%d %H:%M')})")
+                ingestion_result["skipped"] = True
+                ingestion_result["reason"] = f"Datos actualizados al {last_scrape_date.strftime('%Y-%m-%d %H:%M')}"
 
             # Paso 2: Procesar datos (filtrado + análisis IA → campaign_analyses)
             print(f"🔬 Paso 2: Procesando y analizando datos...")

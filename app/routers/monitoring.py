@@ -11,7 +11,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from pydantic import BaseModel, HttpUrl, Field
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 
 from app.db import get_session
@@ -97,6 +97,7 @@ class RunPipelineRequest(BaseModel):
     """Request para ejecutar el pipeline de monitoreo"""
     days_back: int = Field(default=1, ge=1, le=30)
     max_posts_per_source: int = Field(default=50, ge=10, le=200)
+    force_refresh: bool = Field(default=False, description="Forzar scraping aunque haya datos recientes")
 
 
 class CampaignAnalysisSummary(BaseModel):
@@ -309,14 +310,54 @@ async def run_monitoring_pipeline(
     # NUEVO: Usar el sistema de Ingesta Dirigida
     from app.services.ingestion_service import run_ingestion
     from app.services.analysis_engine import process_new_data
+    from app.models import RawScrapeData
 
-    # Paso 1: Ejecutar ingesta (scraping y almacenamiento en raw_scrape_data)
-    ingestion_result = await run_ingestion(
-        db=db,
-        campaign_id=campaign_id,
-        max_posts=request.max_posts_per_source,
-        days_back=request.days_back,
-    )
+    # ================================================================
+    # VERIFICACIÓN INTELIGENTE: Solo buscar días faltantes con Apify
+    # ================================================================
+    now = datetime.now(timezone.utc)
+    source_ids = [s.id for s in sources]
+
+    # Calcular días faltantes
+    days_to_fetch = request.days_back
+    last_scrape_date = None
+
+    if not request.force_refresh:
+        # Buscar la fecha más reciente de datos para esta campaña
+        latest_query = select(func.max(RawScrapeData.createdAt)).where(
+            RawScrapeData.sourceId.in_(source_ids)
+        )
+        latest_result = await db.execute(latest_query)
+        last_scrape_date = latest_result.scalar()
+
+        if last_scrape_date:
+            # Calcular cuántos días han pasado desde el último scrape
+            days_since_last = (now - last_scrape_date).days
+
+            if days_since_last == 0:
+                # Ya hay datos de hoy, no necesitamos Apify
+                days_to_fetch = 0
+            else:
+                # Solo buscar los días que faltan
+                days_to_fetch = min(days_since_last, request.days_back)
+
+    # Paso 1: Ejecutar ingesta SOLO para los días faltantes
+    ingestion_result = {"total_posts_found": 0, "total_posts_stored": 0, "sources_processed": 0, "elapsed_seconds": 0, "skipped": False}
+
+    if days_to_fetch > 0 or request.force_refresh:
+        actual_days = request.days_back if request.force_refresh else days_to_fetch
+        print(f"📥 Ejecutando ingesta para campaña {campaign_id}")
+        print(f"   📅 Días a buscar: {actual_days} (último dato: {last_scrape_date.strftime('%Y-%m-%d %H:%M') if last_scrape_date else 'ninguno'})")
+        ingestion_result = await run_ingestion(
+            db=db,
+            campaign_id=campaign_id,
+            max_posts=request.max_posts_per_source,
+            days_back=actual_days,
+        )
+    else:
+        print(f"⏭️ Ingesta OMITIDA - Datos actualizados (último: {last_scrape_date.strftime('%Y-%m-%d %H:%M') if last_scrape_date else 'N/A'})")
+        ingestion_result["skipped"] = True
+        ingestion_result["reason"] = f"Datos actualizados al {last_scrape_date.strftime('%Y-%m-%d') if last_scrape_date else 'hoy'}"
 
     # Paso 2: Procesar datos nuevos (filtrado + análisis IA)
     analysis_result = await process_new_data(
