@@ -514,20 +514,24 @@ async def get_weekly_report(
             # Construir reporte final
             generation_time = time.time() - start_time
 
+            # Calcular métricas - usar datos del summary (que viene de campaign_analyses)
+            total_relevantes = summary_data.get("total_posts", 0)  # Posts que mencionan al candidato
+            posts_analizados = analysis_result.get("posts_analyzed", 0) if not analysis_result.get("skipped") else total_relevantes
+
             weekly_report_data = {
                 "resumen_ejecutivo": summary_data.get("executive_summary", f"Análisis semanal de {q}"),
                 "analisis_estrategico": summary_data.get("strategic_analysis", ""),
                 "recomendaciones": summary_data.get("recommendations", []),
                 "log_de_evidencia": summary_data.get("evidence_log", []),
                 "metricas": {
-                    "total_menciones": summary_data.get("total_posts", 0),
-                    "posts_analizados": analysis_result.get("posts_analyzed", 0),
-                    "posts_relevantes": analysis_result.get("posts_relevant", 0),
+                    "posts_analizados": posts_analizados,
+                    "posts_relevantes": total_relevantes,  # Los que mencionan al candidato
                     "sentimiento": summary_data.get("sentiment_distribution", {}),
                     "riesgo": summary_data.get("risk_distribution", {}),
                     "engagement": summary_data.get("total_engagement", {}),
                 },
                 "temas_principales": summary_data.get("top_topics", []),
+                "keywords_encontradas": summary_data.get("top_keywords", []),
                 "periodo": {
                     "inicio": (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d"),
                     "fin": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
@@ -536,7 +540,7 @@ async def get_weekly_report(
                     "raw_posts_scraped": ingestion_result.get("total_posts_found", 0),
                     "raw_posts_stored": ingestion_result.get("total_posts_stored", 0),
                     "sources_processed": ingestion_result.get("sources_processed", 0),
-                    "elapsed_seconds": ingestion_result.get("elapsed_seconds", 0),
+                    "skipped": ingestion_result.get("skipped", False),
                 }
             }
 
@@ -1102,20 +1106,25 @@ async def get_daily_summary(
             # Construir reporte final
             generation_time = time.time() - start_time
 
+            # Calcular métricas - usar datos del summary
+            total_relevantes = summary_data.get("total_posts", 0)
+            posts_analizados = analysis_result.get("posts_analyzed", 0) if not analysis_result.get("skipped") else total_relevantes
+
             daily_summary_data = {
                 "resumen_diario_express": summary_data.get("executive_summary", f"Resumen diario de {q}"),
                 "analisis_del_dia": summary_data.get("strategic_analysis", ""),
                 "recomendaciones": summary_data.get("recommendations", []),
                 "registro_de_evidencia": summary_data.get("evidence_log", []),
                 "metricas": {
-                    "total_menciones": summary_data.get("total_posts", 0),
-                    "posts_analizados": analysis_result.get("posts_analyzed", 0),
-                    "posts_relevantes": analysis_result.get("posts_relevant", 0),
+                    "posts_analizados": posts_analizados,
+                    "posts_relevantes": total_relevantes,
                     "sentimiento": summary_data.get("sentiment_distribution", {}),
                     "sentimiento_predominante": summary_data.get("predominant_sentiment", "neutral"),
+                    "riesgo": summary_data.get("risk_distribution", {}),
                     "engagement": summary_data.get("total_engagement", {}),
                 },
                 "temas_del_dia": summary_data.get("top_topics", []),
+                "keywords_encontradas": summary_data.get("top_keywords", []),
                 "periodo": {
                     "inicio": (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M"),
                     "fin": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
@@ -1124,7 +1133,7 @@ async def get_daily_summary(
                     "raw_posts_scraped": ingestion_result.get("total_posts_found", 0),
                     "raw_posts_stored": ingestion_result.get("total_posts_stored", 0),
                     "sources_processed": ingestion_result.get("sources_processed", 0),
-                    "elapsed_seconds": ingestion_result.get("elapsed_seconds", 0),
+                    "skipped": ingestion_result.get("skipped", False),
                 }
             }
 

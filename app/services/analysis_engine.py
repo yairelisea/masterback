@@ -744,9 +744,16 @@ async def get_campaign_summary(
             "postura": postura,
             "resumen": analysis.summary or "Sin resumen",
             "extracto": post_extract,
+            "menciones": analysis.matchedKeywords or [],  # Keywords donde se menciona al candidato
             "url": raw.postUrl if raw else None,
             "fecha": raw.postDate.strftime("%d/%m/%Y") if raw and raw.postDate else None,
+            "autor": raw.postAuthor if raw else None,
             "riesgo": analysis.riskLevel.value if analysis.riskLevel and hasattr(analysis.riskLevel, 'value') else str(analysis.riskLevel or "bajo"),
+            "engagement": {
+                "likes": raw.likes if raw else 0,
+                "shares": raw.shares if raw else 0,
+                "comments": raw.comments if raw else 0,
+            } if raw else None,
         })
 
     # Calcular top topics por categoría
