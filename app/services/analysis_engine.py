@@ -137,26 +137,16 @@ class AnalysisEngine:
                         if matched_keywords:
                             stats["matched"] += 1
 
-                            # Verificar si ya existe análisis para este par (raw_id, campaign_id)
-                            existing = await self.db.execute(
-                                select(CampaignAnalysis.id).where(
-                                    and_(
-                                        CampaignAnalysis.rawId == raw_item.id,
-                                        CampaignAnalysis.campaignId == campaign.id
-                                    )
-                                )
-                            )
-
-                            if existing.scalar_one_or_none():
-                                # Ya existe, saltar
-                                continue
-
                             # Enviar a análisis de IA
                             try:
                                 analysis_result = await self._analyze_with_ai(text_content)
 
-                                # Guardar resultado
-                                new_analysis = CampaignAnalysis(
+                                # Usar UPSERT para evitar duplicados (ON CONFLICT DO NOTHING)
+                                from sqlalchemy.dialects.postgresql import insert as pg_insert
+                                import uuid
+
+                                stmt = pg_insert(CampaignAnalysis).values(
+                                    id=str(uuid.uuid4()),
                                     rawId=raw_item.id,
                                     campaignId=campaign.id,
                                     sentimentScore=analysis_result.get("sentiment"),
@@ -169,33 +159,39 @@ class AnalysisEngine:
                                     analysisModel="perplexity",
                                     isAnalyzed=True,
                                     analyzedAt=datetime.now(timezone.utc)
+                                ).on_conflict_do_nothing(
+                                    index_elements=['rawId', 'campaignId']
                                 )
 
-                                self.db.add(new_analysis)
-                                stats["analyzed"] += 1
-
-                                # Tracking por campaña
-                                if campaign.id not in stats["by_campaign"]:
-                                    stats["by_campaign"][campaign.id] = {"name": campaign.name, "count": 0}
-                                stats["by_campaign"][campaign.id]["count"] += 1
+                                result = await self.db.execute(stmt)
+                                if result.rowcount > 0:
+                                    stats["analyzed"] += 1
+                                    # Tracking por campaña
+                                    if campaign.id not in stats["by_campaign"]:
+                                        stats["by_campaign"][campaign.id] = {"name": campaign.name, "count": 0}
+                                    stats["by_campaign"][campaign.id]["count"] += 1
 
                             except Exception as e:
                                 print(f"   ⚠️ Error analizando: {e}")
                                 stats["errors"] += 1
 
-                    # Marcar como procesado usando UPDATE directo para evitar conflictos
+                    # Marcar como procesado usando UPDATE directo
                     await self.db.execute(
                         text("UPDATE raw_scrape_data SET \"isProcessed\" = true WHERE id = :id"),
                         {"id": raw_id}
                     )
 
-                    # Commit después de cada item para liberar locks
+                    # Commit después de cada item
                     await self.db.commit()
 
                 except Exception as e:
                     print(f"   ⚠️ Error procesando item {raw_id}: {e}")
                     stats["errors"] += 1
-                    await self.db.rollback()
+                    # Rollback y continuar con el siguiente item
+                    try:
+                        await self.db.rollback()
+                    except:
+                        pass  # Ignorar errores de rollback
 
         print(f"\n   ✅ Procesamiento completado:")
         print(f"      - Procesados: {stats['processed']}")
