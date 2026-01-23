@@ -94,6 +94,114 @@ async def diagnostic_campaign_analyses(
         ]
     }
 
+
+@router.post("/cleanup/{campaign_id}")
+async def cleanup_irrelevant_analyses(
+    campaign_id: str,
+    dry_run: bool = Query(True, description="Si true, solo muestra qué se eliminaría sin eliminar"),
+    db: AsyncSession = Depends(get_session)
+):
+    """
+    Limpia análisis que NO mencionan al candidato directamente.
+    Solo mantiene los que mencionan el nombre del candidato en el texto.
+
+    - dry_run=true (default): Solo muestra qué se eliminaría
+    - dry_run=false: Elimina los análisis irrelevantes
+    """
+    from ..models import CampaignAnalysis, RawScrapeData, Campaign
+    from sqlalchemy import text
+
+    # Obtener la campaña para saber el nombre del candidato
+    campaign = await db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaña no encontrada")
+
+    candidate_name = campaign.query or campaign.name
+    if not candidate_name:
+        raise HTTPException(status_code=400, detail="La campaña no tiene nombre de candidato configurado")
+
+    # Extraer partes del nombre para buscar (ej: "Erasmo Gonzalez Robledo" -> ["erasmo", "gonzalez", "robledo"])
+    name_parts = [p.lower() for p in candidate_name.split() if len(p) > 2]
+    first_name = name_parts[0] if name_parts else candidate_name.lower()
+
+    print(f"🔍 Buscando análisis que NO mencionan: {first_name}")
+
+    # Contar total antes
+    total_before = (await db.execute(
+        select(func.count(CampaignAnalysis.id)).where(CampaignAnalysis.campaignId == campaign_id)
+    )).scalar()
+
+    # Buscar análisis donde el rawText NO contiene el nombre del candidato
+    # Usamos SQL directo para el LIKE case-insensitive
+    irrelevant_query = text("""
+        SELECT ca.id, ca.summary, rsd."rawText"
+        FROM campaign_analyses ca
+        JOIN raw_scrape_data rsd ON rsd.id = ca."rawId"
+        WHERE ca."campaignId" = :campaign_id
+        AND LOWER(rsd."rawText") NOT LIKE :name_pattern
+    """)
+
+    result = await db.execute(irrelevant_query, {
+        "campaign_id": campaign_id,
+        "name_pattern": f"%{first_name}%"
+    })
+    irrelevant = result.fetchall()
+    irrelevant_count = len(irrelevant)
+
+    # También contar los que SÍ son relevantes
+    relevant_count = total_before - irrelevant_count
+
+    if dry_run:
+        # Solo mostrar qué se eliminaría
+        return {
+            "mode": "DRY RUN - No se eliminó nada",
+            "campaign_id": campaign_id,
+            "candidate_name": candidate_name,
+            "search_term": first_name,
+            "total_analyses": total_before,
+            "analyses_relevantes": relevant_count,
+            "analyses_a_eliminar": irrelevant_count,
+            "muestra_a_eliminar": [
+                {
+                    "id": row[0],
+                    "summary": row[1][:100] + "..." if row[1] and len(row[1]) > 100 else row[1],
+                    "texto_preview": row[2][:150] + "..." if row[2] and len(row[2]) > 150 else row[2]
+                }
+                for row in irrelevant[:5]  # Solo mostrar 5 ejemplos
+            ],
+            "instruccion": "Para eliminar, llama con dry_run=false"
+        }
+    else:
+        # Eliminar los irrelevantes
+        if irrelevant_count > 0:
+            delete_query = text("""
+                DELETE FROM campaign_analyses
+                WHERE "campaignId" = :campaign_id
+                AND "rawId" IN (
+                    SELECT rsd.id FROM raw_scrape_data rsd
+                    JOIN campaign_analyses ca ON ca."rawId" = rsd.id
+                    WHERE ca."campaignId" = :campaign_id
+                    AND LOWER(rsd."rawText") NOT LIKE :name_pattern
+                )
+            """)
+            await db.execute(delete_query, {
+                "campaign_id": campaign_id,
+                "name_pattern": f"%{first_name}%"
+            })
+            await db.commit()
+
+        return {
+            "mode": "EJECUTADO",
+            "campaign_id": campaign_id,
+            "candidate_name": candidate_name,
+            "search_term": first_name,
+            "total_antes": total_before,
+            "eliminados": irrelevant_count,
+            "restantes": relevant_count,
+            "mensaje": f"Se eliminaron {irrelevant_count} análisis que no mencionaban a '{first_name}'"
+        }
+
+
 # -----------------------------------------------------------------------------------
 # Endpoint principal - Análisis de noticias
 # -----------------------------------------------------------------------------------
