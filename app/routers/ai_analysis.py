@@ -29,6 +29,72 @@ from ..models import (
 router = APIRouter(prefix="/ai", tags=["ai"])
 
 # -----------------------------------------------------------------------------------
+# Endpoint de diagnóstico - Ver datos en BD
+# -----------------------------------------------------------------------------------
+
+@router.get("/diagnostic/{campaign_id}")
+async def diagnostic_campaign_analyses(
+    campaign_id: str,
+    limit: int = Query(5, ge=1, le=20),
+    db: AsyncSession = Depends(get_session)
+):
+    """
+    Diagnóstico: Muestra los datos crudos de campaign_analyses para verificar qué hay en BD.
+    """
+    from ..models import CampaignAnalysis, RawScrapeData
+
+    # Obtener algunos análisis de esta campaña
+    query = (
+        select(CampaignAnalysis)
+        .options(selectinload(CampaignAnalysis.raw_data))
+        .where(CampaignAnalysis.campaignId == campaign_id)
+        .order_by(CampaignAnalysis.analyzedAt.desc())
+        .limit(limit)
+    )
+
+    result = await db.execute(query)
+    analyses = result.scalars().all()
+
+    # Contar totales
+    count_query = select(func.count(CampaignAnalysis.id)).where(
+        CampaignAnalysis.campaignId == campaign_id
+    )
+    total = (await db.execute(count_query)).scalar()
+
+    # Contar con summary vacío
+    empty_query = select(func.count(CampaignAnalysis.id)).where(
+        and_(
+            CampaignAnalysis.campaignId == campaign_id,
+            or_(
+                CampaignAnalysis.summary == None,
+                CampaignAnalysis.summary == "",
+                CampaignAnalysis.summary == "Sin resumen disponible"
+            )
+        )
+    )
+    empty_count = (await db.execute(empty_query)).scalar()
+
+    return {
+        "campaign_id": campaign_id,
+        "total_analyses": total,
+        "analyses_sin_resumen": empty_count,
+        "analyses_con_resumen": total - empty_count if total else 0,
+        "muestra": [
+            {
+                "id": a.id,
+                "summary": a.summary,
+                "category": str(a.category) if a.category else None,
+                "riskLevel": str(a.riskLevel) if a.riskLevel else None,
+                "sentimentScore": a.sentimentScore,
+                "matchedKeywords": a.matchedKeywords,
+                "rawText_preview": a.raw_data.rawText[:200] + "..." if a.raw_data and a.raw_data.rawText else None,
+                "analyzedAt": a.analyzedAt.isoformat() if a.analyzedAt else None,
+            }
+            for a in analyses
+        ]
+    }
+
+# -----------------------------------------------------------------------------------
 # Endpoint principal - Análisis de noticias
 # -----------------------------------------------------------------------------------
 

@@ -830,12 +830,34 @@ async def get_campaign_summary(
         # Categoría/Tema legible
         tema = analysis.category.value if analysis.category and hasattr(analysis.category, 'value') else str(analysis.category or "General")
 
+        # Determinar prioridad basada en si menciona directamente al candidato
+        # Extraer nombre del candidato del query de la campaña
+        candidate_name_parts = campaign_name.lower().split() if campaign_name else []
+        keywords_list = analysis.matchedKeywords or []
+
+        # Separar keywords primarias (nombre) de secundarias (ciudad, etc.)
+        primary_mentions = []
+        secondary_mentions = []
+
+        for kw in keywords_list:
+            kw_lower = kw.lower()
+            # Es primaria si contiene parte del nombre del candidato
+            is_primary = any(part in kw_lower or kw_lower in part for part in candidate_name_parts if len(part) > 2)
+            if is_primary:
+                primary_mentions.append(kw)
+            else:
+                secondary_mentions.append(kw)
+
+        # Prioridad: 1 = menciona nombre directamente, 2 = solo keywords secundarias
+        prioridad = 1 if primary_mentions else 2
+
         evidence_log.append({
             "tema": tema,
             "postura": postura,
             "resumen": analysis.summary or "Sin resumen",
             "extracto": post_extract,
-            "menciones": analysis.matchedKeywords or [],  # Keywords donde se menciona al candidato
+            "menciones_directas": primary_mentions,  # Keywords del nombre del candidato
+            "menciones_contexto": secondary_mentions,  # Keywords de contexto (ciudad, etc.)
             "url": raw.postUrl if raw else None,
             "fecha": raw.postDate.strftime("%d/%m/%Y") if raw and raw.postDate else None,
             "autor": raw.postAuthor if raw else None,
@@ -845,7 +867,16 @@ async def get_campaign_summary(
                 "shares": raw.shares if raw else 0,
                 "comments": raw.comments if raw else 0,
             } if raw else None,
+            "_prioridad": prioridad,  # Para ordenamiento
         })
+
+    # Ordenar evidence_log: primero los que mencionan directamente al candidato
+    evidence_log.sort(key=lambda x: (x.get("_prioridad", 2), x.get("fecha") or ""))
+
+    # Contar posts con mención directa vs solo contexto
+    posts_mencion_directa = sum(1 for e in evidence_log if e.get("_prioridad") == 1)
+    posts_solo_contexto = sum(1 for e in evidence_log if e.get("_prioridad") == 2)
+    print(f"   📊 Posts con mención directa: {posts_mencion_directa}, Solo contexto: {posts_solo_contexto}")
 
     # Calcular top topics por categoría
     category_counts = Counter(categories)
@@ -906,10 +937,12 @@ Palabras clave más mencionadas: {', '.join(top_keywords[:5]) if top_keywords el
         "campaign_id": campaign_id,
         "campaign_name": campaign_name,
         "total_posts": total_posts,
+        "posts_mencion_directa": posts_mencion_directa,  # Mencionan al candidato por nombre
+        "posts_solo_contexto": posts_solo_contexto,  # Solo keywords de contexto
         "executive_summary": executive_summary,
         "strategic_analysis": strategic_analysis,
         "recommendations": recommendations,
-        "evidence_log": evidence_log[:50],  # Limitar a 50 para el reporte
+        "evidence_log": evidence_log[:50],  # Limitar a 50, ya ordenado por prioridad
         "sentiment_distribution": sentiment_counts,
         "risk_distribution": risk_counts,
         "total_engagement": {
