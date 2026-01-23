@@ -145,7 +145,11 @@ class AnalysisEngine:
                 try:
                     # Obtener el item fresco
                     raw_item = await self.db.get(RawScrapeData, raw_id)
-                    if not raw_item or raw_item.isProcessed:
+                    if not raw_item:
+                        continue
+
+                    # Si es re-análisis, procesar aunque isProcessed=True
+                    if not reanalyze_incomplete and raw_item.isProcessed:
                         continue
 
                     stats["processed"] += 1
@@ -158,12 +162,31 @@ class AnalysisEngine:
                         # Buscar coincidencias
                         matched_keywords = self._find_keyword_matches(text_content, keywords)
 
-                        if matched_keywords:
+                        # Si es re-análisis, forzar aunque no haya match (ya existe el análisis)
+                        should_analyze = bool(matched_keywords) or reanalyze_incomplete
+
+                        if should_analyze:
                             stats["matched"] += 1
+                            print(f"   🔍 Analizando post {raw_id[:8]}... (keywords: {matched_keywords[:3] if matched_keywords else 'reanalisis'})")
 
                             # Enviar a análisis de IA
                             try:
                                 analysis_result = await self._analyze_with_ai(text_content)
+                                print(f"   ✅ Resultado IA: sentiment={analysis_result.get('sentiment')}, summary={analysis_result.get('summary', '')[:50]}...")
+
+                                # Si no hay keywords del nuevo filtro, usar las que ya tenía
+                                if not matched_keywords and reanalyze_incomplete:
+                                    # Obtener keywords existentes del análisis
+                                    existing = await self.db.execute(
+                                        select(CampaignAnalysis.matchedKeywords).where(
+                                            and_(
+                                                CampaignAnalysis.rawId == raw_item.id,
+                                                CampaignAnalysis.campaignId == campaign.id
+                                            )
+                                        )
+                                    )
+                                    existing_kw = existing.scalar_one_or_none()
+                                    matched_keywords = existing_kw if existing_kw else ["re-análisis"]
 
                                 # Usar UPSERT para evitar duplicados (ON CONFLICT DO NOTHING)
                                 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -540,35 +563,64 @@ class AnalysisEngine:
     # =========================================================================
     # HELPERS
     # =========================================================================
-    def _get_campaign_keywords(self, campaign) -> List[str]:
-        """Extrae keywords de una campaña"""
-        keywords = []
+    def _get_campaign_keywords(self, campaign) -> Dict[str, List[str]]:
+        """
+        Extrae keywords de una campaña, separadas por prioridad.
 
-        # Query principal (nombre del candidato)
+        Returns:
+            Dict con 'primary' (nombre completo/apellidos) y 'secondary' (ciudad, variantes)
+        """
+        primary = []  # Keywords que DEBEN aparecer (nombre del candidato)
+        secondary = []  # Keywords opcionales (ciudad, variantes)
+
+        # Query principal (nombre del candidato) - REQUERIDO
         if campaign.query:
-            keywords.append(campaign.query)
-            # También agregar partes del nombre
-            keywords.extend([p for p in campaign.query.split() if len(p) > 2])
+            primary.append(campaign.query)  # Nombre completo
+            # Agregar combinaciones de nombre + apellido
+            parts = [p for p in campaign.query.split() if len(p) > 2]
+            if len(parts) >= 2:
+                # Agregar primer nombre + apellidos como alternativas
+                primary.append(parts[0])  # Primer nombre (ej: "Erasmo")
+                for i in range(1, len(parts)):
+                    primary.append(f"{parts[0]} {parts[i]}")  # "Erasmo Gonzalez", "Erasmo Robledo"
 
-        # Variantes de búsqueda si existen
+        # Variantes de búsqueda - también primarias
         if campaign.search_variants:
-            keywords.extend(campaign.search_variants)
+            primary.extend(campaign.search_variants)
 
-        # Keywords de ciudad si existen
+        # Keywords de ciudad - secundarias (solo para contexto, no para filtrar)
         if campaign.city_keywords:
-            keywords.extend(campaign.city_keywords)
+            secondary.extend(campaign.city_keywords)
 
-        return list(set(keywords))  # Eliminar duplicados
+        return {
+            "primary": list(set(primary)),
+            "secondary": list(set(secondary))
+        }
 
-    def _find_keyword_matches(self, text: str, keywords: List[str]) -> List[str]:
-        """Encuentra qué keywords aparecen en el texto"""
+    def _find_keyword_matches(self, text: str, keywords: Dict[str, List[str]]) -> List[str]:
+        """
+        Encuentra qué keywords aparecen en el texto.
+        REQUIERE que al menos una keyword PRIMARIA coincida.
+        """
         if not text:
             return []
 
         text_lower = text.lower()
         matches = []
+        has_primary_match = False
 
-        for keyword in keywords:
+        # Primero verificar keywords primarias (REQUERIDO)
+        for keyword in keywords.get("primary", []):
+            if keyword.lower() in text_lower:
+                matches.append(keyword)
+                has_primary_match = True
+
+        # Si no hay match primario, no incluir este post
+        if not has_primary_match:
+            return []
+
+        # Agregar matches secundarios (para contexto)
+        for keyword in keywords.get("secondary", []):
             if keyword.lower() in text_lower:
                 matches.append(keyword)
 
