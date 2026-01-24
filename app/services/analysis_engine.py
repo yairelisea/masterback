@@ -576,21 +576,43 @@ class AnalysisEngine:
         # Query principal (nombre del candidato) - REQUERIDO
         if campaign.query:
             primary.append(campaign.query)  # Nombre completo
-            # Agregar combinaciones de nombre + apellido
             parts = [p for p in campaign.query.split() if len(p) > 2]
+
+            if len(parts) >= 1:
+                # Primer nombre
+                primary.append(parts[0])  # "Erasmo"
+
             if len(parts) >= 2:
-                # Agregar primer nombre + apellidos como alternativas
-                primary.append(parts[0])  # Primer nombre (ej: "Erasmo")
+                # Combinaciones de nombre + apellido
                 for i in range(1, len(parts)):
                     primary.append(f"{parts[0]} {parts[i]}")  # "Erasmo Gonzalez", "Erasmo Robledo"
 
-        # Variantes de búsqueda - también primarias
+                # Solo apellidos (importante para políticos conocidos por apellido)
+                for i in range(1, len(parts)):
+                    primary.append(parts[i])  # "Gonzalez", "Robledo"
+
+                # Combinación de apellidos
+                if len(parts) >= 3:
+                    primary.append(f"{parts[1]} {parts[2]}")  # "Gonzalez Robledo"
+
+        # Variantes de búsqueda configuradas - también primarias
         if campaign.search_variants:
             primary.extend(campaign.search_variants)
 
-        # Keywords de ciudad - secundarias (solo para contexto, no para filtrar)
+        # Agregar términos de cargos políticos comunes como PRIMARIOS
+        # Esto captura menciones como "el Alcalde dijo..." o "Presidente Municipal anunció..."
+        cargos_politicos = [
+            "alcalde", "alcaldesa",
+            "presidente municipal", "presidenta municipal",
+            "edil", "munícipe",
+        ]
+        primary.extend(cargos_politicos)
+
+        # Keywords de ciudad - secundarias (solo para contexto)
         if campaign.city_keywords:
             secondary.extend(campaign.city_keywords)
+
+        print(f"   🔑 Keywords primarias: {list(set(primary))[:10]}...")
 
         return {
             "primary": list(set(primary)),
