@@ -95,6 +95,90 @@ async def diagnostic_campaign_analyses(
     }
 
 
+@router.get("/diagnostic-raw/{campaign_id}")
+async def diagnostic_raw_scrape_data(
+    campaign_id: str,
+    search_term: str = Query(None, description="Buscar este término en los posts"),
+    db: AsyncSession = Depends(get_session)
+):
+    """
+    Diagnóstico: Ver qué hay en raw_scrape_data para esta campaña.
+    Busca si hay posts que contengan el término especificado.
+    """
+    from ..models import RawScrapeData, MonitoringSource, Campaign
+    from sqlalchemy import text
+
+    # Obtener campaña
+    campaign = await db.get(Campaign, campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaña no encontrada")
+
+    candidate_name = campaign.query or campaign.name
+    search = search_term or candidate_name.split()[0].lower() if candidate_name else ""
+
+    # Obtener fuentes de la campaña
+    sources_result = await db.execute(
+        select(MonitoringSource).where(MonitoringSource.campaignId == campaign_id)
+    )
+    sources = sources_result.scalars().all()
+    source_ids = [s.id for s in sources]
+
+    if not source_ids:
+        return {"error": "No hay fuentes configuradas para esta campaña"}
+
+    # Contar total en raw_scrape_data
+    total_query = select(func.count(RawScrapeData.id)).where(
+        RawScrapeData.sourceId.in_(source_ids)
+    )
+    total_raw = (await db.execute(total_query)).scalar()
+
+    # Buscar posts que contengan el término
+    search_query = text("""
+        SELECT id, "rawText", "postUrl", "postAuthor", "postDate"
+        FROM raw_scrape_data
+        WHERE "sourceId" = ANY(:source_ids)
+        AND LOWER("rawText") LIKE :search_pattern
+        LIMIT 10
+    """)
+
+    result = await db.execute(search_query, {
+        "source_ids": source_ids,
+        "search_pattern": f"%{search.lower()}%"
+    })
+    matches = result.fetchall()
+
+    # Contar total de matches
+    count_query = text("""
+        SELECT COUNT(*) FROM raw_scrape_data
+        WHERE "sourceId" = ANY(:source_ids)
+        AND LOWER("rawText") LIKE :search_pattern
+    """)
+    match_count = (await db.execute(count_query, {
+        "source_ids": source_ids,
+        "search_pattern": f"%{search.lower()}%"
+    })).scalar()
+
+    return {
+        "campaign_id": campaign_id,
+        "campaign_name": candidate_name,
+        "search_term": search,
+        "fuentes_configuradas": len(sources),
+        "fuentes": [{"id": s.id, "name": s.name, "url": s.url} for s in sources[:5]],
+        "total_posts_raw": total_raw,
+        "posts_que_mencionan_termino": match_count,
+        "muestra_matches": [
+            {
+                "id": row[0],
+                "texto": row[1][:300] + "..." if row[1] and len(row[1]) > 300 else row[1],
+                "url": row[2],
+                "autor": row[3],
+                "fecha": row[4].isoformat() if row[4] else None
+            }
+            for row in matches
+        ]
+    }
+
+
 @router.post("/cleanup/{campaign_id}")
 async def cleanup_irrelevant_analyses(
     campaign_id: str,
