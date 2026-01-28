@@ -123,32 +123,32 @@ async def generate_daily_report(
             "risk_score": risk_summary["score"],
         },
 
-        # Datos de noticias
+        # Datos de noticias (Merge news_items + socmint_analyses)
         "news": {
-            "count": len(news_data["items"]),
+            "count": len(news_data["items"]) + len(raw_analyzed_data["analyses"]),
             "sentiment_breakdown": news_data["sentiment_breakdown"],
-            "items": news_data["items"][:20],  # Top 20 noticias
+            "items": (news_data["items"] + raw_analyzed_data["analyses"])[:40],  # Combined top items
         },
 
-        # Datos de redes sociales
+        # Datos de redes sociales (Merge social_data + raw_analyzed_data)
         "social": {
-            "count": len(social_data["posts"]),
-            "by_platform": social_data["by_platform"],
-            "sentiment_breakdown": social_data["sentiment_breakdown"],
+            "count": len(social_data["posts"]) + len(raw_analyzed_data["analyses"]),
+            "by_platform": social_data["by_platform"], # Platform counts updated below
+            "sentiment_breakdown": social_data["sentiment_breakdown"], # Aggregated breakdown
             "engagement_total": social_data["engagement_total"],
-            "top_posts": social_data["posts"][:10],  # Top 10 posts
+            "top_posts": (social_data["posts"] + raw_analyzed_data["analyses"])[:20],  # Top 20 merged posts
         },
 
-        # Temas y narrativas
-        "topics": topics_summary,
-
-        # Análisis SOCMINT (Datos Crudos Analizados)
+        # Análisis SOCMINT (Datos Crudos Analizados - kept for reference or specialized UI)
         "socmint_analysis": {
             "count": len(raw_analyzed_data["analyses"]),
             "sentiment_breakdown": raw_analyzed_data["sentiment_breakdown"],
             "risk_breakdown": raw_analyzed_data["risk_breakdown"],
             "items": raw_analyzed_data["analyses"][:20],
         },
+
+        # Temas y narrativas
+        "topics": topics_summary,
 
         # Alertas de riesgo
         "risk_alerts": risk_summary["alerts"],
@@ -274,24 +274,21 @@ async def generate_weekly_report(
         # Tendencia diaria
         "daily_trend": daily_trend,
 
-        # Datos de noticias
+        # Datos de noticias (Merge news_items + socmint_analyses)
         "news": {
-            "count": len(news_data["items"]),
+            "count": len(news_data["items"]) + len(raw_analyzed_data["analyses"]),
             "sentiment_breakdown": news_data["sentiment_breakdown"],
-            "top_stories": news_data["items"][:10],
+            "top_stories": (news_data["items"] + raw_analyzed_data["analyses"])[:40],
         },
 
-        # Datos de redes sociales
+        # Datos de redes sociales (Merge social_data + raw_analyzed_data)
         "social": {
-            "count": len(social_data["posts"]),
+            "count": len(social_data["posts"]) + len(raw_analyzed_data["analyses"]),
             "by_platform": social_data["by_platform"],
             "sentiment_breakdown": social_data["sentiment_breakdown"],
             "engagement_total": social_data["engagement_total"],
-            "top_posts": social_data["posts"][:10],
+            "top_posts": (social_data["posts"] + raw_analyzed_data["analyses"])[:20],
         },
-
-        # Temas principales
-        "topics": topics_summary,
 
         # Análisis SOCMINT (Datos Crudos Analizados)
         "socmint_analysis": {
@@ -300,6 +297,9 @@ async def generate_weekly_report(
             "risk_breakdown": raw_analyzed_data["risk_breakdown"],
             "items": raw_analyzed_data["analyses"][:20],
         },
+
+        # Temas principales
+        "topics": topics_summary,
 
         # Narrativas detectadas
         "narratives": _extract_narratives(social_data),
@@ -495,19 +495,22 @@ async def _get_analyzed_raw_data_for_period(
         if not raw:
             continue
 
+        # Normalizar para que parezca una "noticia" (News Item)
+        # Esto permite que el frontend y los PDFs existentes lo muestren sin cambios
         analysis_data = {
             "id": analysis.id,
-            "raw_id": raw.id,
-            "platform": raw.platform,
+            "title": f"[{raw.platform.upper() if raw.platform else 'NOTA'}] {analysis.summary[:60] if analysis.summary else 'Sin título'}...",
             "url": raw.postUrl,
-            "content": (raw.rawText or "")[:300],
-            "date": raw.createdAt.isoformat() if raw.createdAt else None,
+            "published_at": analysis.analyzedAt.isoformat() if analysis.analyzedAt else raw.createdAt.isoformat(),
+            "created_at": analysis.analyzedAt.isoformat() if analysis.analyzedAt else raw.createdAt.isoformat(),
+            "sentiment": (analysis.category.value if analysis.category else "Otros"),
             "sentiment_score": analysis.sentimentScore,
-            "category": analysis.category.value if analysis.category else None,
-            "risk_level": analysis.riskLevel.value if analysis.riskLevel else None,
             "summary": analysis.summary,
+            "topics": analysis.matchedKeywords,
+            "is_socmint": True,
+            "platform": raw.platform,
+            "risk_level": analysis.riskLevel.value if analysis.riskLevel else "bajo",
             "intent": analysis.intent.value if analysis.intent else None,
-            "matched_keywords": analysis.matchedKeywords,
         }
 
         # Contar sentimientos

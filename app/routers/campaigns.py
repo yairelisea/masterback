@@ -235,7 +235,7 @@ async def campaign_overview(
     if (current_user.get("role") != "admin") and (c.userId != current_user.get("id")):
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    from ..models import IngestedItem, Analysis
+    from ..models import IngestedItem, Analysis, CampaignAnalysis
 
     cnt_rows = (
         await db.execute(
@@ -251,17 +251,26 @@ async def campaign_overview(
         await db.execute(select(func.count()).select_from(Analysis).where(Analysis.campaignId == campaign_id))
     ).scalar_one()
 
+    # Nuevo: Contar análisis de SOCMINT
+    socmint_count = (
+        await db.execute(select(func.count()).select_from(CampaignAnalysis).where(CampaignAnalysis.campaignId == campaign_id))
+    ).scalar_one()
+
     last_item_at = (
         await db.execute(select(func.max(IngestedItem.createdAt)).where(IngestedItem.campaignId == campaign_id))
     ).scalar_one()
     last_analysis_at = (
         await db.execute(select(func.max(Analysis.createdAt)).where(Analysis.campaignId == campaign_id))
     ).scalar_one()
+    last_socmint_at = (
+        await db.execute(select(func.max(CampaignAnalysis.analyzedAt)).where(CampaignAnalysis.campaignId == campaign_id))
+    ).scalar_one()
 
     return {
         "campaign": _to_out(c, c.monitoring_sources).model_dump(),
         "items": {"total": total_items, "by_status": counts, "last_created_at": last_item_at},
         "analyses": {"total": int(analyses_count), "last_created_at": last_analysis_at},
+        "socmint": {"total": int(socmint_count), "last_created_at": last_socmint_at},
     }
 
 @router.post("/{campaign_id}/refresh")

@@ -15,7 +15,7 @@ from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_session
 from .. import models
-from ..models import ActorReport, ReportType
+from ..models import ActorReport, ReportType, CampaignAnalysis, RawScrapeData
 from sqlalchemy.orm import selectinload
 from datetime import date, datetime, timedelta
 from pydantic import BaseModel, Field
@@ -197,8 +197,16 @@ async def post_report(payload: Dict[str, Any], request: Request, db: AsyncSessio
             .order_by(models.Analysis.createdAt.desc())
             .limit(200)
         )
+        # SOCMINT analyses
+        cam_analyses_q = (
+            select(models.CampaignAnalysis)
+            .where(models.CampaignAnalysis.campaignId == campaign_id)
+            .order_by(models.CampaignAnalysis.analyzedAt.desc())
+            .limit(200)
+        )
         items = (await db.execute(items_q)).scalars().all()
         analyses = (await db.execute(analyses_q)).scalars().all()
+        cam_analyses = (await db.execute(cam_analyses_q)).scalars().all()
 
         # arma estructura mínima que entiende tu microservicio PDF
         data.setdefault("campaign", {
@@ -213,7 +221,9 @@ async def post_report(payload: Dict[str, Any], request: Request, db: AsyncSessio
                 "publishedAt": (it.publishedAt.isoformat() if it.publishedAt else None)
             } for it in items
         ])
-        data["analysis"].setdefault("analyses", [
+        
+        # Merge legacy and SOCMINT analyses
+        all_analyses = [
             {
                 "sentiment": a.sentiment,
                 "tone": a.tone,
@@ -222,7 +232,19 @@ async def post_report(payload: Dict[str, Any], request: Request, db: AsyncSessio
                 "stance": a.stance,
                 "createdAt": (a.createdAt.isoformat() if a.createdAt else None)
             } for a in analyses
+        ]
+        all_analyses.extend([
+            {
+                "sentiment": a.sentimentScore,
+                "tone": (a.category.value if a.category else "Otros"),
+                "topics": a.matchedKeywords,
+                "summary": a.summary,
+                "stance": (a.riskLevel.value if a.riskLevel else "Bajo"),
+                "createdAt": (a.analyzedAt.isoformat() if a.analyzedAt else None),
+                "is_socmint": True
+            } for a in cam_analyses
         ])
+        data["analysis"].setdefault("analyses", all_analyses)
 
     # 3) continúa con el render PDF como ya lo haces
     campaign = data.get("campaign") or {}
@@ -285,7 +307,19 @@ async def daily_news_report(
         )
         .order_by(models.IngestedItem.createdAt.desc())
     )
+    # SOCMINT analyses for the same day
+    cam_analyses_q = (
+        select(models.CampaignAnalysis)
+        .options(selectinload(models.CampaignAnalysis.raw_data))
+        .where(
+            models.CampaignAnalysis.campaignId == payload.campaignId,
+            models.CampaignAnalysis.analyzedAt >= start_of_day,
+            models.CampaignAnalysis.analyzedAt <= end_of_day,
+        )
+        .order_by(models.CampaignAnalysis.analyzedAt.desc())
+    )
     items = (await db.execute(items_q)).scalars().all()
+    cam_analyses = (await db.execute(cam_analyses_q)).scalars().all()
 
     print(f"Fetched {len(items)} items for report.")
 
@@ -303,6 +337,20 @@ async def daily_news_report(
                 "topics": item.analysis.topics,
                 #"key_points": item.analysis.key_points,
             })
+    
+    # Add SOCMINT items to the same list
+    for a in cam_analyses:
+        raw = a.raw_data
+        report_items.append({
+            "title": f"[{raw.platform.upper() if raw and raw.platform else 'SOCMINT'}] {a.summary[:60]}...",
+            "url": raw.postUrl if raw else None,
+            "publishedAt": a.analyzedAt.isoformat() if a.analyzedAt else None,
+            "summary": a.summary,
+            "sentiment_label": (a.category.value if a.category else "Otros"),
+            "sentiment_score": a.sentimentScore,
+            "topics": a.matchedKeywords,
+            "is_socmint": True
+        })
 
     pdf_payload = {
         "report_type": "daily_news",
@@ -348,7 +396,16 @@ async def digital_perception_report(
             models.Analysis.createdAt <= end_of_day,
         )
     )
+    cam_analyses_q = (
+        select(models.CampaignAnalysis)
+        .where(
+            models.CampaignAnalysis.campaignId == payload.campaignId,
+            models.CampaignAnalysis.analyzedAt >= start_of_day,
+            models.CampaignAnalysis.analyzedAt <= end_of_day,
+        )
+    )
     analyses = (await db.execute(analyses_q)).scalars().all()
+    cam_analyses = (await db.execute(cam_analyses_q)).scalars().all()
 
     # Process data for the report
     sentiment_by_day = {}
@@ -369,6 +426,27 @@ async def digital_perception_report(
         if analysis.sentiment:
             total_sentiment_score += analysis.sentiment
 
+    for ca in cam_analyses:
+        day = ca.analyzedAt.date()
+        if day not in sentiment_by_day:
+            sentiment_by_day[day] = {"Positivo": 0, "Negativo": 0, "Neutral": 0}
+        
+        # Map sentiment score to tone
+        score = ca.sentimentScore or 0
+        tone = "Neutral"
+        if score > 0.3: tone = "Positivo"
+        elif score < -0.3: tone = "Negativo"
+        
+        sentiment_by_day[day][tone] += 1
+
+        if ca.matchedKeywords:
+            all_topics.extend(ca.matchedKeywords)
+        
+        if ca.sentimentScore:
+            total_sentiment_score += ca.sentimentScore
+    
+    total_total_analyses = len(analyses) + len(cam_analyses)
+
     # Convert dates to strings for the payload
     sentiment_trend = [
         {"date": day.isoformat(), **counts} for day, counts in sorted(sentiment_by_day.items())
@@ -387,8 +465,8 @@ async def digital_perception_report(
         "start_date": payload.startDate.isoformat(),
         "end_date": payload.endDate.isoformat(),
         "summary": {
-            "total_articles": len(analyses),
-            "average_sentiment": round(average_sentiment, 2),
+            "total_articles": total_total_analyses,
+            "average_sentiment": round(total_sentiment_score / total_total_analyses, 2) if total_total_analyses > 0 else 0,
         },
         "sentiment_trend": sentiment_trend,
         "topic_frequency": topic_frequency,
@@ -699,6 +777,7 @@ async def generate_daily_pdf(
         "news": report_data["news"],
         "social": report_data["social"],
         "topics": report_data["topics"],
+        "socmint_analysis": report_data.get("socmint_analysis"),
         "risk_alerts": report_data["risk_alerts"],
     }
 
@@ -754,6 +833,7 @@ async def generate_weekly_pdf(
         "news": report_data["news"],
         "social": report_data["social"],
         "topics": report_data["topics"],
+        "socmint_analysis": report_data.get("socmint_analysis"),
         "narratives": report_data.get("narratives", []),
         "risk_analysis": report_data["risk_analysis"],
         "insights": report_data["insights"],
