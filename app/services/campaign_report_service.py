@@ -28,6 +28,8 @@ from ..models import (
     ActorReport,
     ReportType,
     RiskLevel,
+    RawScrapeData,
+    CampaignAnalysis,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,7 +80,7 @@ async def generate_daily_report(
         db=db,
     )
 
-    # 2. Obtener datos de redes sociales del día
+    # 2. Obtener datos de redes sociales del día (legacy/apify)
     social_data = await _get_social_data_for_period(
         campaign_id=campaign_id,
         start_date=start_of_day,
@@ -86,10 +88,18 @@ async def generate_daily_report(
         db=db,
     )
 
+    # 3. Obtener datos crudos analizados (SOCMINT)
+    raw_analyzed_data = await _get_analyzed_raw_data_for_period(
+        campaign_id=campaign_id,
+        start_date=start_of_day,
+        end_date=end_of_day,
+        db=db,
+    )
+
     # 3. Calcular métricas agregadas
-    sentiment_summary = _calculate_sentiment_summary(news_data, social_data)
-    risk_summary = _calculate_risk_summary(social_data)
-    topics_summary = _extract_top_topics(news_data, social_data, limit=10)
+    sentiment_summary = _calculate_sentiment_summary(news_data, social_data, raw_analyzed_data)
+    risk_summary = _calculate_risk_summary(social_data, raw_analyzed_data)
+    topics_summary = _extract_top_topics(news_data, social_data, raw_analyzed_data, limit=10)
 
     # 4. Construir reporte
     report = {
@@ -104,9 +114,10 @@ async def generate_daily_report(
 
         # Resumen ejecutivo
         "summary": {
-            "total_mentions": len(news_data["items"]) + len(social_data["posts"]),
+            "total_mentions": len(news_data["items"]) + len(social_data["posts"]) + len(raw_analyzed_data["analyses"]),
             "news_count": len(news_data["items"]),
             "social_count": len(social_data["posts"]),
+            "socmint_count": len(raw_analyzed_data["analyses"]),
             "sentiment": sentiment_summary,
             "risk_level": risk_summary["level"],
             "risk_score": risk_summary["score"],
@@ -130,6 +141,14 @@ async def generate_daily_report(
 
         # Temas y narrativas
         "topics": topics_summary,
+
+        # Análisis SOCMINT (Datos Crudos Analizados)
+        "socmint_analysis": {
+            "count": len(raw_analyzed_data["analyses"]),
+            "sentiment_breakdown": raw_analyzed_data["sentiment_breakdown"],
+            "risk_breakdown": raw_analyzed_data["risk_breakdown"],
+            "items": raw_analyzed_data["analyses"][:20],
+        },
 
         # Alertas de riesgo
         "risk_alerts": risk_summary["alerts"],
@@ -198,22 +217,29 @@ async def generate_weekly_report(
     prev_news = await _get_news_for_period(campaign_id, prev_week_start, prev_week_end, db)
     prev_social = await _get_social_data_for_period(campaign_id, prev_week_start, prev_week_end, db)
 
+    # 3. Datos crudos analizados (SOCMINT) - Semana actual
+    raw_analyzed_data = await _get_analyzed_raw_data_for_period(campaign_id, start_of_week, end_of_week, db)
+    # Datos crudos analizados (SOCMINT) - Semana anterior
+    prev_raw_analyzed = await _get_analyzed_raw_data_for_period(campaign_id, prev_week_start, prev_week_end, db)
+
     # 3. Calcular tendencia día a día
     daily_trend = await _calculate_daily_trend(
         campaign_id, week_start_date, week_end_date, db
     )
 
     # 4. Métricas agregadas
-    sentiment_summary = _calculate_sentiment_summary(news_data, social_data)
-    risk_summary = _calculate_risk_summary(social_data)
-    topics_summary = _extract_top_topics(news_data, social_data, limit=15)
+    sentiment_summary = _calculate_sentiment_summary(news_data, social_data, raw_analyzed_data)
+    risk_summary = _calculate_risk_summary(social_data, raw_analyzed_data)
+    topics_summary = _extract_top_topics(news_data, social_data, raw_analyzed_data, limit=15)
 
     # 5. Comparativa con semana anterior
     comparison = _calculate_week_comparison(
         current_news=news_data,
         current_social=social_data,
+        current_raw=raw_analyzed_data,
         prev_news=prev_news,
         prev_social=prev_social,
+        prev_raw=prev_raw_analyzed,
     )
 
     # 6. Construir reporte
@@ -232,10 +258,11 @@ async def generate_weekly_report(
 
         # Resumen ejecutivo
         "summary": {
-            "total_mentions": len(news_data["items"]) + len(social_data["posts"]),
+            "total_mentions": len(news_data["items"]) + len(social_data["posts"]) + len(raw_analyzed_data["analyses"]),
             "news_count": len(news_data["items"]),
             "social_count": len(social_data["posts"]),
-            "avg_daily_mentions": (len(news_data["items"]) + len(social_data["posts"])) / 7,
+            "socmint_count": len(raw_analyzed_data["analyses"]),
+            "avg_daily_mentions": (len(news_data["items"]) + len(social_data["posts"]) + len(raw_analyzed_data["analyses"])) / 7,
             "sentiment": sentiment_summary,
             "risk_level": risk_summary["level"],
             "risk_score": risk_summary["score"],
@@ -265,6 +292,14 @@ async def generate_weekly_report(
 
         # Temas principales
         "topics": topics_summary,
+
+        # Análisis SOCMINT (Datos Crudos Analizados)
+        "socmint_analysis": {
+            "count": len(raw_analyzed_data["analyses"]),
+            "sentiment_breakdown": raw_analyzed_data["sentiment_breakdown"],
+            "risk_breakdown": raw_analyzed_data["risk_breakdown"],
+            "items": raw_analyzed_data["analyses"][:20],
+        },
 
         # Narrativas detectadas
         "narratives": _extract_narratives(social_data),
@@ -429,6 +464,81 @@ async def _get_social_data_for_period(
     }
 
 
+async def _get_analyzed_raw_data_for_period(
+    campaign_id: str,
+    start_date: datetime,
+    end_date: datetime,
+    db: AsyncSession,
+) -> Dict[str, Any]:
+    """Obtiene datos de RawScrapeData analizados por CampaignAnalysis para un período"""
+
+    query = (
+        select(CampaignAnalysis)
+        .options(selectinload(CampaignAnalysis.raw_data))
+        .where(
+            CampaignAnalysis.campaignId == campaign_id,
+            CampaignAnalysis.analyzedAt >= start_date,
+            CampaignAnalysis.analyzedAt <= end_date,
+        )
+        .order_by(CampaignAnalysis.analyzedAt.desc())
+    )
+
+    result = await db.execute(query)
+    analyses = result.scalars().all()
+
+    processed_analyses = []
+    sentiment_counts = {"positive": 0, "negative": 0, "neutral": 0}
+    risk_counts = {"low": 0, "medium": 0, "high": 0, "critical": 0}
+
+    for analysis in analyses:
+        raw = analysis.raw_data
+        if not raw:
+            continue
+
+        analysis_data = {
+            "id": analysis.id,
+            "raw_id": raw.id,
+            "platform": raw.platform,
+            "url": raw.postUrl,
+            "content": (raw.rawText or "")[:300],
+            "date": raw.createdAt.isoformat() if raw.createdAt else None,
+            "sentiment_score": analysis.sentimentScore,
+            "category": analysis.category.value if analysis.category else None,
+            "risk_level": analysis.riskLevel.value if analysis.riskLevel else None,
+            "summary": analysis.summary,
+            "intent": analysis.intent.value if analysis.intent else None,
+            "matched_keywords": analysis.matchedKeywords,
+        }
+
+        # Contar sentimientos
+        score = analysis.sentimentScore or 0
+        if score > 0.3:
+            sentiment_counts["positive"] += 1
+        elif score < -0.3:
+            sentiment_counts["negative"] += 1
+        else:
+            sentiment_counts["neutral"] += 1
+
+        # Contar riesgos
+        risk = (analysis.riskLevel.value if analysis.riskLevel else "bajo").lower()
+        if "bajo" in risk:
+            risk_counts["low"] += 1
+        elif "medio" in risk:
+            risk_counts["medium"] += 1
+        elif "alto" in risk:
+            risk_counts["high"] += 1
+        elif "crítico" in risk or "critico" in risk:
+            risk_counts["critical"] += 1
+
+        processed_analyses.append(analysis_data)
+
+    return {
+        "analyses": processed_analyses,
+        "sentiment_breakdown": sentiment_counts,
+        "risk_breakdown": risk_counts,
+    }
+
+
 async def _calculate_daily_trend(
     campaign_id: str,
     start_date: date,
@@ -498,16 +608,18 @@ async def _calculate_daily_trend(
 def _calculate_sentiment_summary(
     news_data: Dict[str, Any],
     social_data: Dict[str, Any],
+    raw_analyzed_data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Calcula el resumen de sentimiento combinado"""
 
     news_breakdown = news_data["sentiment_breakdown"]
     social_breakdown = social_data["sentiment_breakdown"]
+    raw_breakdown = (raw_analyzed_data or {}).get("sentiment_breakdown", {"positive": 0, "negative": 0, "neutral": 0})
 
     total = {
-        "positive": news_breakdown["positive"] + social_breakdown["positive"],
-        "negative": news_breakdown["negative"] + social_breakdown["negative"],
-        "neutral": news_breakdown["neutral"] + social_breakdown["neutral"],
+        "positive": news_breakdown["positive"] + social_breakdown["positive"] + raw_breakdown["positive"],
+        "negative": news_breakdown["negative"] + social_breakdown["negative"] + raw_breakdown["negative"],
+        "neutral": news_breakdown["neutral"] + social_breakdown["neutral"] + raw_breakdown["neutral"],
     }
 
     total_count = sum(total.values())
@@ -544,12 +656,16 @@ def _calculate_sentiment_summary(
     }
 
 
-def _calculate_risk_summary(social_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Calcula el resumen de riesgo basado en los posts sociales"""
+def _calculate_risk_summary(
+    social_data: Dict[str, Any],
+    raw_analyzed_data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Calcula el resumen de riesgo basado en los posts sociales y datos crudos"""
 
     posts = social_data["posts"]
+    raw_analyses = (raw_analyzed_data or {}).get("analyses", [])
 
-    if not posts:
+    if not posts and not raw_analyses:
         return {
             "level": "low",
             "score": 0,
@@ -581,6 +697,31 @@ def _calculate_risk_summary(social_data: Dict[str, Any]) -> Dict[str, Any]:
                 "url": post.get("url"),
             })
 
+    for analysis in raw_analyses:
+        risk_level = (analysis.get("risk_level") or "bajo").lower()
+        if "bajo" in risk_level:
+            risk_level = "low"
+        elif "medio" in risk_level:
+            risk_level = "medium"
+        elif "alto" in risk_level:
+            risk_level = "high"
+        elif "crítico" in risk_level or "critico" in risk_level:
+            risk_level = "critical"
+        
+        risk_score = analysis.get("sentiment_score", 0) # Use sentiment as proxy if no explicit score
+        
+        if risk_level in risk_counts:
+            risk_counts[risk_level] += 1
+        
+        # Generar alertas para riesgos altos/críticos
+        if risk_level in ["high", "critical"]:
+            alerts.append({
+                "level": risk_level,
+                "platform": analysis.get("platform"),
+                "content": analysis.get("summary", "")[:100],
+                "url": analysis.get("url"),
+            })
+
     # Calcular score promedio
     avg_score = sum(risk_scores) / len(risk_scores) if risk_scores else 0
 
@@ -599,8 +740,6 @@ def _calculate_risk_summary(social_data: Dict[str, Any]) -> Dict[str, Any]:
     if overall_level in ["high", "critical"]:
         recommendations.append("Monitorear de cerca las menciones negativas detectadas")
         recommendations.append("Considerar preparar una respuesta o comunicado")
-    if risk_counts["negative"] > risk_counts["positive"]:
-        recommendations.append("Aumentar la presencia positiva en redes sociales")
 
     return {
         "level": overall_level,
@@ -614,6 +753,7 @@ def _calculate_risk_summary(social_data: Dict[str, Any]) -> Dict[str, Any]:
 def _extract_top_topics(
     news_data: Dict[str, Any],
     social_data: Dict[str, Any],
+    raw_analyzed_data: Optional[Dict[str, Any]] = None,
     limit: int = 10,
 ) -> List[Dict[str, Any]]:
     """Extrae los temas más mencionados"""
@@ -629,6 +769,12 @@ def _extract_top_topics(
     for post in social_data["posts"]:
         topics = post.get("topics") or []
         all_topics.extend(topics)
+
+    # Topics de SOCMINT
+    if raw_analyzed_data:
+        for analysis in raw_analyzed_data["analyses"]:
+            topics = analysis.get("matched_keywords") or []
+            all_topics.extend(topics)
 
     # Contar frecuencias
     topic_counts = Counter(all_topics)
@@ -662,13 +808,15 @@ def _extract_narratives(social_data: Dict[str, Any]) -> List[Dict[str, Any]]:
 def _calculate_week_comparison(
     current_news: Dict[str, Any],
     current_social: Dict[str, Any],
+    current_raw: Dict[str, Any],
     prev_news: Dict[str, Any],
     prev_social: Dict[str, Any],
+    prev_raw: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Calcula la comparativa con la semana anterior"""
 
-    current_total = len(current_news["items"]) + len(current_social["posts"])
-    prev_total = len(prev_news["items"]) + len(prev_social["posts"])
+    current_total = len(current_news["items"]) + len(current_social["posts"]) + len(current_raw["analyses"])
+    prev_total = len(prev_news["items"]) + len(prev_social["posts"]) + len(prev_raw["analyses"])
 
     # Calcular cambio porcentual
     if prev_total > 0:
@@ -677,8 +825,8 @@ def _calculate_week_comparison(
         change_pct = 100 if current_total > 0 else 0
 
     # Comparar sentimiento
-    current_sentiment = _calculate_sentiment_summary(current_news, current_social)
-    prev_sentiment = _calculate_sentiment_summary(prev_news, prev_social)
+    current_sentiment = _calculate_sentiment_summary(current_news, current_social, current_raw)
+    prev_sentiment = _calculate_sentiment_summary(prev_news, prev_social, prev_raw)
 
     return {
         "mentions": {
@@ -694,6 +842,10 @@ def _calculate_week_comparison(
         "social": {
             "current": len(current_social["posts"]),
             "previous": len(prev_social["posts"]),
+        },
+        "socmint": {
+            "current": len(current_raw["analyses"]),
+            "previous": len(prev_raw["analyses"]),
         },
         "sentiment": {
             "current": current_sentiment["overall"],

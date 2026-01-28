@@ -3,6 +3,7 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import datetime, timezone
+from typing import Optional, Union, Any
 
 from sqlalchemy import (
     String,
@@ -32,14 +33,14 @@ class User(Base):
 
     id: Mapped[str] = mapped_column(String(50), primary_key=True)
     email: Mapped[str] = mapped_column(String(200), unique=True, index=True, nullable=False)
-    name: Mapped[str | None] = mapped_column(String(200))
+    name: Mapped[Optional[str]] = mapped_column(String(200))
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     # Admin & subscription
     isAdmin: Mapped[bool] = mapped_column(Boolean, default=False)
     plan: Mapped[PlanTier] = mapped_column(Enum(PlanTier), default=PlanTier.BASIC)
     # Feature flags at user level (overrides): {"comparator": true, "connectors": false}
-    features: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    features: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
 
 # ------------------------
@@ -55,7 +56,7 @@ class Campaign(Base):
     days_back: Mapped[int] = mapped_column(Integer, default=30)
     lang: Mapped[str] = mapped_column(String(16), default="es-419")
     country: Mapped[str] = mapped_column(String(8), default="MX")
-    city_keywords: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    city_keywords: Mapped[Optional[list[str]]] = mapped_column(JSON, nullable=True)
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     # Admin & subscription
@@ -64,16 +65,16 @@ class Campaign(Base):
     # Auto-update scheduling
     autoEnabled: Mapped[bool] = mapped_column(Boolean, default=True)
     autoRunsToday: Mapped[int] = mapped_column(Integer, default=0)
-    autoLastReset: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    lastAutoRunAt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    autoLastReset: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    lastAutoRunAt: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     # Variantes de búsqueda generadas (lista de strings)
-    search_variants: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    search_variants: Mapped[Optional[list[str]]] = mapped_column(JSON, nullable=True)
 
     # Nuevo: análisis rápido de noticias (avg_sentiment, artículos, etc.)
-    news_analysis: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    news_analysis: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
-    userId: Mapped[str | None] = mapped_column(String(50), ForeignKey("users.id"))
+    userId: Mapped[Optional[str]] = mapped_column(String(50), ForeignKey("users.id"))
     user = relationship("User")
 
     sources = relationship("SourceLink", back_populates="campaign")
@@ -95,7 +96,7 @@ class SourceLink(Base):
     __tablename__ = "source_links"
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: str(uuid.uuid4()))
-    campaignId: Mapped[str | None] = mapped_column(String(40), ForeignKey("campaigns.id"), index=True, nullable=True)
+    campaignId: Mapped[Optional[str]] = mapped_column(String(40), ForeignKey("campaigns.id"), index=True, nullable=True)
     type: Mapped[SourceType] = mapped_column(Enum(SourceType), nullable=False, default=SourceType.NEWS)
     url: Mapped[str] = mapped_column(Text, nullable=False)
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
@@ -104,7 +105,7 @@ class SourceLink(Base):
     isAdmin: Mapped[bool] = mapped_column(Boolean, default=False)
     plan: Mapped[PlanTier] = mapped_column(Enum(PlanTier), default=PlanTier.BASIC)
     # Feature flags at user level (overrides): {"comparator": true, "connectors": false}
-    features: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    features: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     # Importante: dejamos __table_args__ vacío para que los índices/unique
     # se creen de forma idempotente en main.py (IF NOT EXISTS).
@@ -126,19 +127,19 @@ class IngestedItem(Base):
     __tablename__ = "ingested_items"
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: str(uuid.uuid4()))
-    sourceId: Mapped[str | None] = mapped_column(String(40), ForeignKey("source_links.id"))
-    campaignId: Mapped[str | None] = mapped_column(String(40), ForeignKey("campaigns.id"))
+    sourceId: Mapped[Optional[str]] = mapped_column(String(40), ForeignKey("source_links.id"))
+    campaignId: Mapped[Optional[str]] = mapped_column(String(40), ForeignKey("campaigns.id"))
     title: Mapped[str] = mapped_column(Text, nullable=False)
     url: Mapped[str] = mapped_column(Text, nullable=False)
-    publishedAt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    status: Mapped[ItemStatus | None] = mapped_column(Enum(ItemStatus), nullable=True, default=None)
+    publishedAt: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    status: Mapped[Optional[ItemStatus]] = mapped_column(Enum(ItemStatus), nullable=True, default=None)
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     # Admin & subscription
     isAdmin: Mapped[bool] = mapped_column(Boolean, default=False)
     plan: Mapped[PlanTier] = mapped_column(Enum(PlanTier), default=PlanTier.BASIC)
     # Feature flags at user level (overrides): {"comparator": true, "connectors": false}
-    features: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    features: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     analysis = relationship("Analysis", back_populates="item", uselist=False, cascade="all, delete-orphan")
 
@@ -153,16 +154,16 @@ class Analysis(Base):
     campaignId: Mapped[str] = mapped_column(String(40), ForeignKey("campaigns.id"), index=True)
     itemId: Mapped[str] = mapped_column(String(40), ForeignKey("ingested_items.id"), unique=True)
 
-    sentiment: Mapped[float | None] = mapped_column(Float, nullable=True)
-    tone: Mapped[str | None] = mapped_column(String(50))
-    topics: Mapped[list[str] | None] = mapped_column(JSON)
-    summary: Mapped[str | None] = mapped_column(Text)
-    entities: Mapped[dict | None] = mapped_column(JSON)
-    stance: Mapped[str | None] = mapped_column(String(50))
-    perception: Mapped[dict | None] = mapped_column(JSON)
+    sentiment: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    tone: Mapped[Optional[str]] = mapped_column(String(50))
+    topics: Mapped[Optional[list[str]]] = mapped_column(JSON)
+    summary: Mapped[Optional[str]] = mapped_column(Text)
+    entities: Mapped[Optional[dict]] = mapped_column(JSON)
+    stance: Mapped[Optional[str]] = mapped_column(String(50))
+    perception: Mapped[Optional[dict]] = mapped_column(JSON)
     # Metadata adicional del análisis (source, scoring, etc.)
     # Nota: "metadata" es reservado en SQLAlchemy, usamos "analysis_metadata"
-    analysis_metadata: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    analysis_metadata: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     createdAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
@@ -170,7 +171,7 @@ class Analysis(Base):
     isAdmin: Mapped[bool] = mapped_column(Boolean, default=False)
     plan: Mapped[PlanTier] = mapped_column(Enum(PlanTier), default=PlanTier.BASIC)
     # Feature flags at user level (overrides): {"comparator": true, "connectors": false}
-    features: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    features: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     campaign = relationship("Campaign", back_populates="analyses")
     item = relationship("IngestedItem", back_populates="analysis")
@@ -195,7 +196,7 @@ class Plan(Base):
     isAdmin: Mapped[bool] = mapped_column(Boolean, default=False)
     plan: Mapped[PlanTier] = mapped_column(Enum(PlanTier), default=PlanTier.BASIC)
     # Feature flags at user level (overrides): {"comparator": true, "connectors": false}
-    features: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    features: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
 
 class Subscription(Base):
@@ -206,7 +207,7 @@ class Subscription(Base):
     planId: Mapped[str] = mapped_column(String(40), ForeignKey("plans.id"), index=True)
     isActive: Mapped[bool] = mapped_column(Boolean, default=True)
     startedAt: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
-    endsAt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    endsAt: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     user = relationship("User")
     plan = relationship("Plan")
@@ -228,7 +229,7 @@ class Alert(Base):
     isAdmin: Mapped[bool] = mapped_column(Boolean, default=False)
     plan: Mapped[PlanTier] = mapped_column(Enum(PlanTier), default=PlanTier.BASIC)
     # Feature flags at user level (overrides): {"comparator": true, "connectors": false}
-    features: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    features: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     user = relationship("User")
 
@@ -243,7 +244,7 @@ class AlertQuery(Base):
     lang: Mapped[str] = mapped_column(String(16), default="es-419")
     daysBack: Mapped[int] = mapped_column(Integer, default=14)
     size: Mapped[int] = mapped_column(Integer, default=35)
-    cityKeywords: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    cityKeywords: Mapped[Optional[list[str]]] = mapped_column(JSON, nullable=True)
 
 
 class AlertNotification(Base):
@@ -298,7 +299,7 @@ class ActorReport(Base):
         nullable=False
     )
     
-    summary: Mapped[str | None] = mapped_column(
+    summary: Mapped[Optional[str]] = mapped_column(
         Text,
         nullable=True
     )
@@ -311,12 +312,12 @@ class ActorReport(Base):
     )
     
     # Metadatos adicionales
-    generationTime: Mapped[float | None] = mapped_column(
+    generationTime: Mapped[Optional[float]] = mapped_column(
         Float,
         nullable=True
     )
     
-    itemCount: Mapped[int | None] = mapped_column(
+    itemCount: Mapped[Optional[int]] = mapped_column(
         Integer,
         nullable=True
     )
@@ -378,7 +379,7 @@ class MonitoringSource(Base):
     )
 
     # Nombre descriptivo de la fuente (ej: "Página oficial de Juan Pérez")
-    name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
 
     # Estado del monitoreo
     status: Mapped[MonitoringStatus] = mapped_column(
@@ -387,17 +388,17 @@ class MonitoringSource(Base):
     )
 
     # Configuración de Apify
-    apifyActorId: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    apifyConfig: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    apifyActorId: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    apifyConfig: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     # Tracking de ejecuciones
-    lastRunAt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    lastRunStatus: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    lastRunPostsCount: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    lastRunAt: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    lastRunStatus: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    lastRunPostsCount: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     totalPostsCollected: Mapped[int] = mapped_column(Integer, default=0)
 
     # Error tracking
-    lastError: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lastError: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     errorCount: Mapped[int] = mapped_column(Integer, default=0)
 
     createdAt: Mapped[datetime] = mapped_column(
@@ -457,42 +458,42 @@ class AnalyticResult(Base):
     )
 
     # Datos del post original (de Apify)
-    postId: Mapped[str | None] = mapped_column(String(100), nullable=True)  # ID único del post en la plataforma
-    postUrl: Mapped[str | None] = mapped_column(Text, nullable=True)
-    postContent: Mapped[str | None] = mapped_column(Text, nullable=True)
-    postAuthor: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    postDate: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    postId: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)  # ID único del post en la plataforma
+    postUrl: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    postContent: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    postAuthor: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    postDate: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Métricas de engagement (de Apify)
-    likes: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    shares: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    comments: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    views: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    likes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    shares: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    comments: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    views: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # Resultados del análisis de IA
-    sentiment: Mapped[str | None] = mapped_column(String(20), nullable=True)  # positive, negative, neutral
-    sentimentScore: Mapped[float | None] = mapped_column(Float, nullable=True)  # -1.0 a 1.0
+    sentiment: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)  # positive, negative, neutral
+    sentimentScore: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # -1.0 a 1.0
 
     # Narrativa/Temas detectados
-    narrative: Mapped[str | None] = mapped_column(Text, nullable=True)
-    topics: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    narrative: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    topics: Mapped[Optional[list[str]]] = mapped_column(JSON, nullable=True)
 
     # Análisis de riesgo
-    riskLevel: Mapped[RiskLevel | None] = mapped_column(Enum(RiskLevel), nullable=True)
-    riskScore: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 0-100
-    riskFactors: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    riskLevel: Mapped[Optional[RiskLevel]] = mapped_column(Enum(RiskLevel), nullable=True)
+    riskScore: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # 0-100
+    riskFactors: Mapped[Optional[list[str]]] = mapped_column(JSON, nullable=True)
 
     # Entidades mencionadas
-    entities: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    entities: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     # Resumen generado por IA
-    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Metadata del análisis
-    analysisModel: Mapped[str | None] = mapped_column(String(50), nullable=True)  # perplexity, openai, etc.
-    analysisTokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    rawApifyData: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # Datos crudos de Apify
-    rawAIResponse: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # Respuesta cruda de la IA
+    analysisModel: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # perplexity, openai, etc.
+    analysisTokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    rawApifyData: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)  # Datos crudos de Apify
+    rawAIResponse: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)  # Respuesta cruda de la IA
 
     # Flags para filtrado
     isRelevant: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -556,21 +557,21 @@ class ApifyRun(Base):
     )
 
     # Configuración de la ejecución
-    inputConfig: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    inputConfig: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     # Resultados
-    postsFound: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    postsAnalyzed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    postsFound: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    postsAnalyzed: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # Timing
-    startedAt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    finishedAt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    startedAt: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    finishedAt: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Costos y uso
-    computeUnits: Mapped[float | None] = mapped_column(Float, nullable=True)
+    computeUnits: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     # Error tracking
-    errorMessage: Mapped[str | None] = mapped_column(Text, nullable=True)
+    errorMessage: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     createdAt: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -618,25 +619,25 @@ class RawScrapeData(Base):
     postUrl: Mapped[str] = mapped_column(Text, nullable=False, unique=True, index=True)
 
     # Contenido crudo del post
-    rawText: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rawText: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Fecha original del post
-    postDate: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    postDate: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Autor del post
-    postAuthor: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    postAuthor: Mapped[Optional[str]] = mapped_column(String(300), nullable=True)
 
     # Metadata JSON con todos los datos adicionales de Apify
-    metadataJson: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    metadataJson: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     # Métricas de engagement (para ordenamiento/priorización)
-    likes: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
-    shares: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
-    comments: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
-    views: Mapped[int | None] = mapped_column(Integer, nullable=True, default=0)
+    likes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=0)
+    shares: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=0)
+    comments: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=0)
+    views: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=0)
 
     # Plataforma de origen
-    platform: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    platform: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
 
     # Flags de procesamiento
     isProcessed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
@@ -716,25 +717,25 @@ class CampaignAnalysis(Base):
     # ========== Resultados del análisis SOCMINT ==========
 
     # Sentimiento (-1.0 a 1.0)
-    sentimentScore: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sentimentScore: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     # Categoría del contenido
-    category: Mapped[AnalysisCategory | None] = mapped_column(
+    category: Mapped[Optional[AnalysisCategory]] = mapped_column(
         Enum(AnalysisCategory),
         nullable=True
     )
 
     # Nivel de riesgo
-    riskLevel: Mapped[AnalysisRiskLevel | None] = mapped_column(
+    riskLevel: Mapped[Optional[AnalysisRiskLevel]] = mapped_column(
         Enum(AnalysisRiskLevel),
         nullable=True
     )
 
     # Resumen (máximo 15 palabras según prompt SOCMINT)
-    summary: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    summary: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
 
     # Intención detectada
-    intent: Mapped[AnalysisIntent | None] = mapped_column(
+    intent: Mapped[Optional[AnalysisIntent]] = mapped_column(
         Enum(AnalysisIntent),
         nullable=True
     )
@@ -742,13 +743,13 @@ class CampaignAnalysis(Base):
     # ========== Metadata del análisis ==========
 
     # Palabras clave que activaron el análisis
-    matchedKeywords: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    matchedKeywords: Mapped[Optional[list[str]]] = mapped_column(JSON, nullable=True)
 
     # Respuesta cruda de la IA (para debugging)
-    rawAIResponse: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    rawAIResponse: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     # Modelo/servicio usado para el análisis
-    analysisModel: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    analysisModel: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
 
     # Flag para evitar re-análisis (ahorro de costos)
     isAnalyzed: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
